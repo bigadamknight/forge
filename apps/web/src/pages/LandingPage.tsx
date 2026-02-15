@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { Flame, Mic, Brain, Users, Zap, ArrowRight, Sparkles, MessageSquare, Layers } from 'lucide-react'
+import { Flame, Mic, Brain, Users, Zap, ArrowRight, Sparkles, MessageSquare, Layers, FileText, GitBranch, AlertTriangle, Lightbulb, Hash, BookOpen, Quote, Info } from 'lucide-react'
 
 export default function LandingPage() {
   return (
@@ -108,6 +108,36 @@ export default function LandingPage() {
           <OpusRole title="Expert Channel" description="Answers user questions by channelling the expert's knowledge through 5-layer cascading context" />
           <OpusRole title="Tool Refiner" description="Understands conversational edit requests and updates component configs in real-time" />
           <OpusRole title="Knowledge Integrator" description="Analyzes follow-up interviews and proposes updates to existing tools with new knowledge" />
+        </div>
+      </section>
+
+      {/* Extraction Types */}
+      <section className="max-w-4xl mx-auto px-8 py-16">
+        <h2 className="text-2xl font-bold mb-3 text-center">9 Knowledge Types</h2>
+        <p className="text-slate-400 text-center mb-12 max-w-2xl mx-auto">
+          As the expert speaks, the Knowledge Extractor classifies every insight into one of nine types,
+          each with a confidence score and tags. This structured taxonomy drives tool generation.
+        </p>
+        <div className="grid grid-cols-3 gap-3">
+          {[
+            { icon: <FileText className="w-4 h-4" />, name: 'Facts', desc: 'Concrete statements of truth with supporting evidence' },
+            { icon: <Layers className="w-4 h-4" />, name: 'Procedures', desc: 'Step-by-step processes and workflows' },
+            { icon: <GitBranch className="w-4 h-4" />, name: 'Decision Rules', desc: 'If/then logic and branching criteria' },
+            { icon: <AlertTriangle className="w-4 h-4" />, name: 'Warnings', desc: 'Pitfalls, risks, and things to avoid' },
+            { icon: <Lightbulb className="w-4 h-4" />, name: 'Tips', desc: 'Best practices, shortcuts, and expert advice' },
+            { icon: <Hash className="w-4 h-4" />, name: 'Metrics', desc: 'Numbers, measurements, and thresholds' },
+            { icon: <BookOpen className="w-4 h-4" />, name: 'Definitions', desc: 'Domain-specific terminology explained' },
+            { icon: <Quote className="w-4 h-4" />, name: 'Examples', desc: 'Concrete illustrations and case studies' },
+            { icon: <Info className="w-4 h-4" />, name: 'Context', desc: 'Background and situational knowledge' },
+          ].map((c) => (
+            <div key={c.name} className="bg-slate-800/50 border border-slate-700/30 p-4">
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-orange-400">{c.icon}</span>
+                <span className="text-sm font-medium">{c.name}</span>
+              </div>
+              <p className="text-xs text-slate-500">{c.desc}</p>
+            </div>
+          ))}
         </div>
       </section>
 
