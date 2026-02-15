@@ -31,6 +31,7 @@ interface WorkspaceSidebarProps {
   overallProgress: number
   activePanel: ActivePanel
   interviewRounds?: InterviewRound[]
+  creatorMode?: boolean
   onPanelChange: (panel: ActivePanel) => void
   onAddDocument?: () => void
   onNewChat?: () => void
@@ -45,6 +46,7 @@ export default function WorkspaceSidebar({
   overallProgress,
   activePanel,
   interviewRounds,
+  creatorMode = true,
   onPanelChange,
   onAddDocument,
   onNewChat,
@@ -86,33 +88,37 @@ export default function WorkspaceSidebar({
         ))}
       </SidebarSection>
 
-      {/* Documents section */}
-      <SidebarSection title="Documents" count={documents.length}>
-        <SidebarItem
-          icon={FileText}
-          label="All Documents"
-          active={activePanel.type === 'documents'}
-          onClick={() => onPanelChange({ type: 'documents' })}
-        />
-        {onAddDocument && (
-          <button
-            onClick={onAddDocument}
-            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-slate-500 hover:text-orange-400 transition-colors border-l-2 border-transparent pl-[10px]"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Document
-          </button>
-        )}
-      </SidebarSection>
+      {/* Documents section - hidden when empty and no add handler */}
+      {(documents.length > 0 || onAddDocument) && (
+        <SidebarSection title="Documents" count={documents.length}>
+          <SidebarItem
+            icon={FileText}
+            label="All Documents"
+            active={activePanel.type === 'documents'}
+            onClick={() => onPanelChange({ type: 'documents' })}
+          />
+          {onAddDocument && (
+            <button
+              onClick={onAddDocument}
+              className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-slate-500 hover:text-orange-400 transition-colors border-l-2 border-transparent pl-[10px]"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add Document
+            </button>
+          )}
+        </SidebarSection>
+      )}
 
       {/* Knowledge section */}
-      <SidebarSection title="Knowledge" count={extractionCount}>
-        <SidebarItem
-          icon={Database}
-          label="Extractions"
-          active={activePanel.type === 'knowledge'}
-          onClick={() => onPanelChange({ type: 'knowledge' })}
-        />
+      <SidebarSection title={creatorMode ? 'Knowledge' : 'Chat'} count={creatorMode ? extractionCount : chats.length}>
+        {creatorMode && (
+          <SidebarItem
+            icon={Database}
+            label="Extractions"
+            active={activePanel.type === 'knowledge'}
+            onClick={() => onPanelChange({ type: 'knowledge' })}
+          />
+        )}
         {chats.map((chat) => (
           <SidebarItem
             key={chat.id}
@@ -132,7 +138,7 @@ export default function WorkspaceSidebar({
             New Chat
           </button>
         )}
-        {rounds.map((r) => (
+        {interviewRounds && rounds.map((r) => (
           <SidebarItem
             key={`interview-${r.round}`}
             icon={Mic}

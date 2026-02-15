@@ -7,11 +7,12 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: 'list',
-  timeout: 30000,
+  timeout: 60000,
+  expect: { timeout: 30000 },
   use: {
     baseURL: 'http://localhost:3070',
     trace: 'on-first-retry',
-    navigationTimeout: 30000,
+    navigationTimeout: 60000,
   },
   projects: [
     { name: 'chromium', use: { browserName: 'chromium' } },

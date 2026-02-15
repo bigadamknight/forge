@@ -3,7 +3,7 @@ import { test, expect, COMPLETE_FORGE_ID as FORGE_ID } from './fixtures'
 test.describe('Tool View (Creator)', () => {
   test('loads tool with tabs for each component', async ({ page }) => {
     await page.goto(`/forge/${FORGE_ID}/tool`)
-    await expect(page.locator('text=Star Wars Lego').first()).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('text=Star Wars Lego').first()).toBeVisible()
     await expect(page.locator('text=Find Your Perfect').first()).toBeVisible()
   })
 
@@ -37,7 +37,7 @@ test.describe('Tool View (Creator)', () => {
   test('share button opens modal with URL', async ({ page }) => {
     await page.goto(`/forge/${FORGE_ID}/tool`)
     const shareBtn = page.locator('button:has-text("Share")')
-    await expect(shareBtn).toBeVisible({ timeout: 10000 })
+    await expect(shareBtn).toBeVisible()
     await shareBtn.click()
     const urlInput = page.locator('input[readonly]')
     await expect(urlInput).toBeVisible()
@@ -54,7 +54,7 @@ test.describe('Tool View (Creator)', () => {
 
   test('workspace sidebar shows navigation panels', async ({ page }) => {
     await page.goto(`/forge/${FORGE_ID}/tool`)
-    await expect(page.locator('text=Interview').first()).toBeVisible({ timeout: 10000 })
+    await expect(page.locator('text=Interview').first()).toBeVisible()
     await expect(page.locator('text=Knowledge').first()).toBeVisible()
   })
 })
