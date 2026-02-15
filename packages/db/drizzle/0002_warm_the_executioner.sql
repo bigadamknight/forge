@@ -1,0 +1,1 @@
+ALTER TABLE "forges" ADD COLUMN "depth" text DEFAULT 'standard' NOT NULL;

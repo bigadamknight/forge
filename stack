@@ -1,0 +1,129 @@
+#!/bin/bash
+set -euo pipefail
+
+# ============ Forge Stack CLI ============
+# Usage: ./stack <command>
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+# ============ Core Commands ============
+
+function start() {
+  echo "Starting Forge..."
+  db:up
+  sleep 2
+  api &
+  web &
+  echo ""
+  echo "  Frontend: http://localhost:3070"
+  echo "  API:      http://localhost:3071"
+  echo "  DB:       localhost:5435"
+  echo ""
+  wait
+}
+
+function stop() {
+  echo "Stopping Forge..."
+  kill $(lsof -ti:3071) 2>/dev/null || true
+  kill $(lsof -ti:3070) 2>/dev/null || true
+  docker compose stop
+  echo "Stopped."
+}
+
+# ============ Individual Services ============
+
+function api() {
+  echo "Starting API on :3071..."
+  bun run --cwd apps/api src/index.ts
+}
+
+function web() {
+  echo "Starting frontend on :3070..."
+  yarn workspace @forge/web dev
+}
+
+function db:up() {
+  echo "Starting PostgreSQL..."
+  docker compose up -d
+}
+
+function db:stop() {
+  docker compose stop
+}
+
+function db:psql() {
+  docker compose exec postgres psql -U forge forge "$@"
+}
+
+function db:migrate() {
+  bun run --cwd packages/db src/migrate.ts
+}
+
+function db:generate() {
+  npx -w packages/db drizzle-kit generate
+}
+
+function db:reset() {
+  echo "Resetting database..."
+  docker compose down -v
+  docker compose up -d
+  sleep 2
+  db:migrate
+  echo "Database reset."
+}
+
+# ============ Build & Check ============
+
+function mcp() {
+  echo "Starting MCP server (stdio)..."
+  bun run packages/mcp/src/index.ts
+}
+
+function typecheck() {
+  echo "Type checking..."
+  npx -w apps/web tsc --noEmit
+  npx -w apps/api tsc --noEmit
+  echo "All clear."
+}
+
+function install() {
+  yarn install
+}
+
+# ============ Help ============
+
+function help() {
+  cat << 'EOF'
+
+  Forge Stack CLI
+
+  Usage: ./stack <command>
+
+  Core:
+    start           Start all services (db + api + web)
+    stop            Stop all services
+
+  Services:
+    api             Start API server only (:3071)
+    web             Start frontend only (:3070)
+    db:up           Start PostgreSQL only
+    db:stop         Stop PostgreSQL
+    db:psql         Open psql shell
+    db:migrate      Run database migrations
+    db:generate     Generate migration from schema changes
+    db:reset        Drop and recreate database
+
+  Dev:
+    typecheck       Run TypeScript checks on both apps
+    install         Install dependencies
+    mcp             Start MCP server (stdio, for Claude Code)
+
+EOF
+}
+
+# ============ Dispatch ============
+
+command="${1:-help}"
+shift 2>/dev/null || true
+eval "$command" "$@"

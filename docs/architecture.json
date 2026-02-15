@@ -1,0 +1,321 @@
+{
+  "version": "1.0",
+  "lastUpdated": "2026-02-11",
+  "project": {
+    "name": "Forge",
+    "description": "AI-powered platform that captures expert knowledge through interviews and generates interactive tools",
+    "vision": "Transform expert knowledge into shareable, interactive AI-native tools"
+  },
+  "techStack": [
+    { "name": "TypeScript", "icon": "TS" },
+    { "name": "Bun", "icon": "\u26a1" },
+    { "name": "Hono", "icon": "\ud83d\udd25" },
+    { "name": "React 18", "icon": "\u269b" },
+    { "name": "PostgreSQL 16", "icon": "\ud83d\udc18" },
+    { "name": "Drizzle ORM" },
+    { "name": "Vite" },
+    { "name": "TailwindCSS" },
+    { "name": "Claude API (Opus 4.6)" },
+    { "name": "ElevenLabs ConvAI" },
+    { "name": "React Query" }
+  ],
+  "stats": [
+    { "label": "API Routes", "value": 22 },
+    { "label": "DB Tables", "value": 7 },
+    { "label": "Pages", "value": 5 },
+    { "label": "Toolkit Components", "value": 10 },
+    { "label": "Hooks", "value": 4 },
+    { "label": "AI Services", "value": 5 }
+  ],
+  "categories": [
+    { "id": "interview", "name": "Interview Pipeline", "icon": "\ud83c\udf99" },
+    { "id": "generation", "name": "Tool Generation", "icon": "\u2699" },
+    { "id": "toolkit", "name": "Interactive Toolkit", "icon": "\ud83e\uddf0" },
+    { "id": "data", "name": "Data Layer", "icon": "\ud83d\uddc4" },
+    { "id": "ui", "name": "Frontend", "icon": "\ud83d\udda5" }
+  ],
+  "components": [
+    {
+      "id": "interview-planner",
+      "name": "Interview Planner",
+      "description": "Generates structured interview config from expert intro using Opus",
+      "categoryId": "interview",
+      "status": "complete",
+      "layers": [
+        { "name": "interview-planner.ts", "type": "service" },
+        { "name": "interviews.ts", "type": "route" },
+        { "name": "NewForgePage.tsx", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "Section/question generation from expert intro", "status": "done" },
+        { "name": "Extraction priorities per section", "status": "done" },
+        { "name": "Duration estimates", "status": "done" }
+      ],
+      "connections": ["database", "claude-api"]
+    },
+    {
+      "id": "interview-conductor",
+      "name": "Interview Conductor",
+      "description": "SSE streaming interview with validation, extraction, and auto-advance",
+      "categoryId": "interview",
+      "status": "complete",
+      "layers": [
+        { "name": "conductor.ts", "type": "service" },
+        { "name": "validator.ts", "type": "service" },
+        { "name": "extractor.ts", "type": "service" },
+        { "name": "interviews.ts", "type": "route" },
+        { "name": "InterviewPage.tsx", "type": "frontend" },
+        { "name": "useInterview.ts", "type": "hook" }
+      ],
+      "features": [
+        { "name": "SSE streaming responses", "status": "done" },
+        { "name": "Goal-based question validation", "status": "done" },
+        { "name": "Real-time knowledge extraction (9 types)", "status": "done" },
+        { "name": "Auto-advance at confidence threshold", "status": "done" },
+        { "name": "Section summaries", "status": "done" }
+      ],
+      "connections": ["database", "claude-api", "interview-planner"]
+    },
+    {
+      "id": "voice-interview",
+      "name": "Voice Interview",
+      "description": "ElevenLabs ConvAI voice agent for natural interview conversations",
+      "categoryId": "interview",
+      "status": "complete",
+      "layers": [
+        { "name": "voice.ts", "type": "route" },
+        { "name": "VoicePanel.tsx", "type": "frontend" },
+        { "name": "useVoice.ts", "type": "hook" }
+      ],
+      "features": [
+        { "name": "Voice agent creation with interview context", "status": "done" },
+        { "name": "Transcript saving and extraction", "status": "done" },
+        { "name": "Resume from partial interview", "status": "done" },
+        { "name": "Real-time voice extraction", "status": "done" }
+      ],
+      "connections": ["database", "elevenlabs-api", "interview-conductor"]
+    },
+    {
+      "id": "documents",
+      "name": "Document Upload",
+      "description": "Supporting documents (text/URL) that provide additional context for generation",
+      "categoryId": "interview",
+      "status": "complete",
+      "layers": [
+        { "name": "documents.ts", "type": "route" },
+        { "name": "DocumentUploadPage.tsx", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "Text document upload", "status": "done" },
+        { "name": "URL content extraction", "status": "done" },
+        { "name": "Document listing and deletion", "status": "done" }
+      ],
+      "connections": ["database"]
+    },
+    {
+      "id": "tool-generator",
+      "name": "Tool Generator",
+      "description": "Two-phase parallel generation: plan components then generate each in parallel via SSE",
+      "categoryId": "generation",
+      "status": "complete",
+      "layers": [
+        { "name": "tool-generator.ts", "type": "service" },
+        { "name": "tools.ts", "type": "route" },
+        { "name": "llm.ts", "type": "service" }
+      ],
+      "features": [
+        { "name": "Plan phase (title, theme, component selection)", "status": "done" },
+        { "name": "Parallel component generation (Sonnet)", "status": "done" },
+        { "name": "SSE progress streaming", "status": "done" },
+        { "name": "System prompt caching for parallel efficiency", "status": "done" },
+        { "name": "10 component type schemas", "status": "done" },
+        { "name": "Truncated JSON repair", "status": "done" },
+        { "name": "Component ID deduplication", "status": "done" }
+      ],
+      "connections": ["database", "claude-api", "interview-conductor"]
+    },
+    {
+      "id": "expert-chat",
+      "name": "Ask the Expert",
+      "description": "5-layer cascading context system for personalized expert answers",
+      "categoryId": "generation",
+      "status": "complete",
+      "layers": [
+        { "name": "tools.ts (ask endpoint)", "type": "route" }
+      ],
+      "features": [
+        { "name": "Domain context layer", "status": "done" },
+        { "name": "Expert knowledge layer (extractions + docs)", "status": "done" },
+        { "name": "Tool context layer (current component)", "status": "done" },
+        { "name": "User situation layer", "status": "done" },
+        { "name": "Question layer", "status": "done" },
+        { "name": "ElevenLabs chat agent creation", "status": "done" }
+      ],
+      "connections": ["database", "claude-api", "elevenlabs-api"]
+    },
+    {
+      "id": "tool-view",
+      "name": "Tool Viewer & Dashboard",
+      "description": "Tab-based tool viewer with dashboard overview, completion tracking, and generation progress",
+      "categoryId": "ui",
+      "status": "complete",
+      "layers": [
+        { "name": "ToolViewPage.tsx", "type": "frontend" },
+        { "name": "useToolDashboard.ts", "type": "hook" },
+        { "name": "ToolRenderer.tsx", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "Dashboard overview with progress", "status": "done" },
+        { "name": "Tab navigation with completion indicators", "status": "done" },
+        { "name": "Generation progress UI (plan + components)", "status": "done" },
+        { "name": "Regenerate with type-to-confirm modal", "status": "done" },
+        { "name": "Reset progress", "status": "done" },
+        { "name": "localStorage completion persistence", "status": "done" }
+      ],
+      "connections": ["tool-generator", "toolkit-components", "inline-editing"]
+    },
+    {
+      "id": "inline-editing",
+      "name": "Inline Editing",
+      "description": "Edit generated tool content in-place with save/cancel and PATCH persistence",
+      "categoryId": "ui",
+      "status": "complete",
+      "layers": [
+        { "name": "EditableText.tsx", "type": "frontend" },
+        { "name": "EditableList.tsx", "type": "frontend" },
+        { "name": "useToolEditor.ts", "type": "hook" },
+        { "name": "tools.ts (PATCH)", "type": "route" }
+      ],
+      "features": [
+        { "name": "contentEditable text fields", "status": "done" },
+        { "name": "Add/remove list items", "status": "done" },
+        { "name": "Dirty state tracking", "status": "done" },
+        { "name": "PATCH endpoint for layout persistence", "status": "done" },
+        { "name": "Save/cancel with react-query invalidation", "status": "done" }
+      ],
+      "connections": ["database", "toolkit-components"]
+    },
+    {
+      "id": "toolkit-components",
+      "name": "Toolkit Components (10)",
+      "description": "Interactive component library: checklists, decision trees, calculators, scorecards, etc.",
+      "categoryId": "toolkit",
+      "status": "complete",
+      "layers": [
+        { "name": "Checklist.tsx", "type": "frontend" },
+        { "name": "DecisionTree.tsx", "type": "frontend" },
+        { "name": "Calculator.tsx", "type": "frontend" },
+        { "name": "InfoCard.tsx", "type": "frontend" },
+        { "name": "StepByStep.tsx", "type": "frontend" },
+        { "name": "QuestionFlow.tsx", "type": "frontend" },
+        { "name": "ScoreCard.tsx", "type": "frontend" },
+        { "name": "ComparisonTable.tsx", "type": "frontend" },
+        { "name": "ContextPanel.tsx", "type": "frontend" },
+        { "name": "RiskAssessment.tsx", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "Completion tracking per component", "status": "done" },
+        { "name": "Edit mode (EditableText/EditableList)", "status": "done" },
+        { "name": "localStorage persistence (QF answers, view prefs)", "status": "done" },
+        { "name": "QuestionFlow variable substitution + expert advice", "status": "done" },
+        { "name": "Checklist list/card view toggle", "status": "done" },
+        { "name": "InfoCard acknowledge/review", "status": "done" },
+        { "name": "Copy-to-clipboard on all components", "status": "done" }
+      ],
+      "connections": ["inline-editing", "expert-chat"]
+    },
+    {
+      "id": "database",
+      "name": "Database",
+      "description": "PostgreSQL 16 with Drizzle ORM, 7 tables, Docker-based",
+      "categoryId": "data",
+      "status": "complete",
+      "layers": [
+        { "name": "schema.ts", "type": "database" },
+        { "name": "index.ts", "type": "service" },
+        { "name": "migrate.ts", "type": "migration" }
+      ],
+      "features": [
+        { "name": "Forge lifecycle (draft to complete)", "status": "done" },
+        { "name": "Interview sections/questions/messages", "status": "done" },
+        { "name": "Knowledge extractions (9 types)", "status": "done" },
+        { "name": "Documents (text + URL)", "status": "done" },
+        { "name": "Tool config (JSONB)", "status": "done" },
+        { "name": "Tool sessions", "status": "done" },
+        { "name": "Seed data and fixtures", "status": "done" }
+      ],
+      "connections": []
+    }
+  ],
+  "dataFlows": [
+    {
+      "name": "Expert Knowledge Capture",
+      "steps": [
+        { "label": "Create Forge", "detail": "Expert name, domain, target audience", "type": "frontend" },
+        { "label": "Plan Interview", "detail": "Opus generates sections, questions, extraction priorities", "type": "backend" },
+        { "label": "Conduct Interview", "detail": "SSE streaming: conductor responds, validator checks, extractor captures", "type": "backend" },
+        { "label": "Upload Documents", "detail": "Text or URL supporting context", "type": "frontend" },
+        { "label": "Store Knowledge", "detail": "Extractions + documents saved to PostgreSQL", "type": "database" }
+      ]
+    },
+    {
+      "name": "Tool Generation",
+      "steps": [
+        { "label": "Plan Components", "detail": "Opus selects 4-8 component types from knowledge", "type": "backend" },
+        { "label": "Stream Plan", "detail": "SSE: title, theme, component list to frontend", "type": "backend" },
+        { "label": "Parallel Generate", "detail": "Sonnet generates each component with cached system prompt", "type": "backend" },
+        { "label": "Stream Progress", "detail": "SSE: component-by-component completion updates", "type": "backend" },
+        { "label": "Save & Display", "detail": "toolConfig saved to DB, rendered as interactive tabs", "type": "frontend" }
+      ]
+    },
+    {
+      "name": "Ask the Expert",
+      "steps": [
+        { "label": "User Question", "detail": "From QuestionFlow completion or manual ask", "type": "frontend" },
+        { "label": "Build Context", "detail": "5 layers: domain, expert knowledge, tool, user situation, question", "type": "backend" },
+        { "label": "Generate Answer", "detail": "Claude channels expert voice with full context", "type": "backend" },
+        { "label": "Display Response", "detail": "Rendered as markdown in tool sidebar or inline", "type": "frontend" }
+      ]
+    },
+    {
+      "name": "Inline Editing",
+      "steps": [
+        { "label": "Toggle Edit Mode", "detail": "EditableText/EditableList activate across all components", "type": "frontend" },
+        { "label": "User Edits", "detail": "contentEditable text, add/remove list items", "type": "frontend" },
+        { "label": "Track Changes", "detail": "useToolEditor compares editableLayout vs original", "type": "hook" },
+        { "label": "Save", "detail": "PATCH /tool-config updates layout in database", "type": "backend" }
+      ]
+    }
+  ],
+  "roadmap": [
+    {
+      "title": "Operations Mode (Weekly Task Board)",
+      "priority": "high",
+      "items": [
+        "TaskBoard component with To Do / In Progress / Done columns",
+        "AI generates recurring weekly tasks from toolkit content",
+        "Two-phase flow: Setup toolkit then Operations board",
+        "Weekly reset logic with completion history",
+        "Tasks link back to relevant toolkit sections"
+      ]
+    },
+    {
+      "title": "Sharing & Distribution",
+      "priority": "medium",
+      "items": [
+        "Public shareable tool URLs",
+        "Embed toolkit in external sites",
+        "Export as PDF or markdown"
+      ]
+    },
+    {
+      "title": "Testing & Quality",
+      "priority": "medium",
+      "items": [
+        "Unit tests for AI services (conductor, validator, extractor)",
+        "E2E tests for generation flow",
+        "Component tests for toolkit interactions"
+      ]
+    }
+  ]
+}
