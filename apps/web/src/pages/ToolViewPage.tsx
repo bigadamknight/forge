@@ -114,6 +114,16 @@ export default function ToolViewPage() {
     handleCompletionChange({ ...completionMap, [componentId]: complete })
   }
 
+  const handleChatComponentUpdate = (componentId: string, config: Record<string, unknown>) => {
+    const idx = editableLayout.findIndex((c) => c.id === componentId)
+    if (idx !== -1) updateComponent(idx, config)
+  }
+
+  const handleChatNavigate = (componentId: string) => {
+    const idx = tabs.findIndex((t) => t.id === componentId)
+    if (idx !== -1) handleTabChange(idx)
+  }
+
   const handleRegenerate = () => {
     setShowRegenModal(false)
     handleCompletionChange({})
@@ -439,14 +449,8 @@ export default function ToolViewPage() {
                   layout={editableLayout}
                   userContext={userContext}
                   variant="panel"
-                  onComponentUpdate={(componentId, config) => {
-                    const idx = editableLayout.findIndex((c) => c.id === componentId)
-                    if (idx !== -1) updateComponent(idx, config)
-                  }}
-                  onNavigate={(componentId) => {
-                    const idx = tabs.findIndex((t) => t.id === componentId)
-                    if (idx !== -1) handleTabChange(idx)
-                  }}
+                  onComponentUpdate={handleChatComponentUpdate}
+                  onNavigate={handleChatNavigate}
                 />
               </div>
             )}
@@ -520,14 +524,8 @@ export default function ToolViewPage() {
         layout={editableLayout}
         userContext={userContext}
         hidden={activePanel.type === 'chat'}
-        onComponentUpdate={(componentId, config) => {
-          const idx = editableLayout.findIndex((c) => c.id === componentId)
-          if (idx !== -1) updateComponent(idx, config)
-        }}
-        onNavigate={(componentId) => {
-          const idx = tabs.findIndex((t) => t.id === componentId)
-          if (idx !== -1) handleTabChange(idx)
-        }}
+        onComponentUpdate={handleChatComponentUpdate}
+        onNavigate={handleChatNavigate}
       />
     </div>
   )

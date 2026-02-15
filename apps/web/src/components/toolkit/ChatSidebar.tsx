@@ -23,10 +23,8 @@ interface ChatSidebarProps {
   hidden?: boolean
 }
 
-function chatStorageKey(forgeId: string, chatId?: string, variant?: string): string {
-  if (variant === 'floating') return `chat-${forgeId}-floating`
-  if (chatId) return `chat-${forgeId}-${chatId}`
-  return `chat-${forgeId}`
+function chatStorageKey(forgeId: string, chatId?: string): string {
+  return chatId ? `chat-${forgeId}-${chatId}` : `chat-${forgeId}`
 }
 
 export default function ChatSidebar({
@@ -43,7 +41,7 @@ export default function ChatSidebar({
 }: ChatSidebarProps) {
   const [isOpen, setIsOpen] = useState(false)
   const isPanel = variant === 'panel'
-  const storageKey = chatStorageKey(forgeId, chatId, variant)
+  const storageKey = chatStorageKey(forgeId, chatId)
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const raw = localStorage.getItem(storageKey)

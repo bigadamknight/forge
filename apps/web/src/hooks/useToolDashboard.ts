@@ -276,9 +276,7 @@ export function useToolDashboard(forgeId: string) {
     } catch { /* ignore */ }
   }, [completionMap, forgeId])
 
-  const handleCompletionChange = (newMap: Record<string, boolean>) => {
-    setCompletionMap(newMap)
-  }
+  const handleCompletionChange = setCompletionMap
 
   const handleTabChange = (index: number) => {
     if (index === -1) {
@@ -297,11 +295,12 @@ export function useToolDashboard(forgeId: string) {
 
   const createChat = useCallback(() => {
     const id = crypto.randomUUID()
-    const title = `Chat ${chats.length + 1}`
-    const chat: ChatInfo = { id, title, createdAt: Date.now() }
-    setChats((prev) => [...prev, chat])
+    setChats((prev) => {
+      const chat: ChatInfo = { id, title: `Chat ${prev.length + 1}`, createdAt: Date.now() }
+      return [...prev, chat]
+    })
     setActivePanel({ type: 'chat', chatId: id })
-  }, [chats.length])
+  }, [])
 
   return {
     data,
