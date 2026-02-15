@@ -37,12 +37,8 @@ export default function ChatPanel({
 
   const { isListening, transcript, isSupported, toggleListening } = useVoice(handleVoiceTranscript)
 
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }
-
   useEffect(() => {
-    scrollToBottom()
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, streamingContent])
 
   const handleSubmit = () => {

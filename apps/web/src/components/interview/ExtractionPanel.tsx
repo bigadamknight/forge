@@ -19,15 +19,9 @@ const TYPE_CONFIG: Record<string, { color: string, bg: string, icon: typeof Brai
 }
 
 export default function ExtractionPanel({ extractions, liveExtractions }: ExtractionPanelProps) {
-  const allExtractions = [...extractions, ...liveExtractions]
-
-  // Deduplicate by id
-  const seen = new Set<string>()
-  const unique = allExtractions.filter((e) => {
-    if (seen.has(e.id)) return false
-    seen.add(e.id)
-    return true
-  })
+  const unique = [...new Map(
+    [...extractions, ...liveExtractions].map((e) => [e.id, e])
+  ).values()]
 
   return (
     <div className="flex flex-col h-full">
@@ -61,6 +55,12 @@ export default function ExtractionPanel({ extractions, liveExtractions }: Extrac
   )
 }
 
+function confidenceBadge(confidence: number): string {
+  if (confidence >= 0.8) return 'bg-green-500/20 text-green-400'
+  if (confidence >= 0.5) return 'bg-amber-500/20 text-amber-400'
+  return 'bg-slate-500/20 text-slate-400'
+}
+
 function ExtractionCard({ extraction, isNew }: { extraction: Extraction, isNew: boolean }) {
   const config = TYPE_CONFIG[extraction.type] || TYPE_CONFIG.context
   const Icon = config.icon
@@ -79,13 +79,7 @@ function ExtractionCard({ extraction, isNew }: { extraction: Extraction, isNew: 
               {extraction.type.replace('_', ' ')}
             </span>
             {extraction.confidence !== null && (
-              <span className={`text-xs px-1.5 py-0.5 ${
-                extraction.confidence >= 0.8
-                  ? 'bg-green-500/20 text-green-400'
-                  : extraction.confidence >= 0.5
-                    ? 'bg-amber-500/20 text-amber-400'
-                    : 'bg-slate-500/20 text-slate-400'
-              }`}>
+              <span className={`text-xs px-1.5 py-0.5 ${confidenceBadge(extraction.confidence)}`}>
                 {Math.round(extraction.confidence * 100)}%
               </span>
             )}

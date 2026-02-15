@@ -168,6 +168,64 @@ Respond with JSON only:
   return result
 }
 
+export async function generateFollowUpSkeleton(
+  expertName: string,
+  domain: string,
+  expertBio: string,
+  targetAudience: string | null,
+  topic: string,
+  existingKnowledge: string,
+  existingComponents: string[]
+): Promise<InterviewSkeleton> {
+  const componentList = existingComponents.map((t, i) => `${i + 1}. ${t}`).join("\n")
+
+  const prompt = `Design a FOLLOW-UP interview structure for an expert who has already been interviewed.
+
+**Expert:** ${expertName}
+**Domain:** ${domain}
+**Background:** ${expertBio}
+**Target Audience:** ${targetAudience || "General public"}
+
+**Follow-up Focus:** ${topic}
+
+**Already Captured Knowledge (DO NOT repeat):**
+${existingKnowledge}
+
+**Existing Tool Components:**
+${componentList}
+
+Create 2-3 focused sections that dig deeper into "${topic}" WITHOUT repeating knowledge already captured above. Focus on gaps, nuances, and new angles.
+
+Do NOT include questions yet - only section titles and goals.
+
+Respond with JSON only:
+{
+  "sections": [
+    {
+      "title": "Section title",
+      "goal": "What NEW knowledge this section should extract"
+    }
+  ],
+  "estimatedDurationMinutes": 15,
+  "domainContext": "Brief context for this follow-up focus area",
+  "extractionPriorities": ["specific_priorities_for_this_topic"]
+}`
+
+  const skeleton = await generateJSON<InterviewSkeleton>(prompt, {
+    system: SYSTEM_PROMPT,
+    temperature: 0.5,
+    maxTokens: 2048,
+    effort: "high",
+  })
+
+  // Hard cap at 3 sections for follow-ups
+  if (skeleton.sections.length > 3) {
+    skeleton.sections = skeleton.sections.slice(0, 3)
+  }
+
+  return skeleton
+}
+
 export async function generateFirstMessage(
   expertName: string,
   domain: string,

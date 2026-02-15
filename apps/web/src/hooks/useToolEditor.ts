@@ -46,10 +46,6 @@ export function useToolEditor(forgeId: string, originalLayout: Array<Record<stri
     setEditMode(false)
   }
 
-  const handleToggleEdit = () => {
-    setEditMode((prev) => !prev)
-  }
-
   return {
     editMode,
     editableLayout,
@@ -58,6 +54,6 @@ export function useToolEditor(forgeId: string, originalLayout: Array<Record<stri
     updateComponent,
     handleSave,
     handleCancel,
-    handleToggleEdit,
+    handleToggleEdit: () => setEditMode((prev) => !prev),
   }
 }

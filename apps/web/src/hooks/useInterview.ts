@@ -25,6 +25,7 @@ export interface UseInterviewReturn {
   handleComplete: () => Promise<void>
   addLiveExtractions: (items: Array<{ id: string; type: string; content: string; confidence: number; tags: string[] | null }>) => void
   interviewComplete: boolean
+  currentRound: number
 }
 
 export function useInterview(forgeId: string): UseInterviewReturn {
@@ -42,15 +43,18 @@ export function useInterview(forgeId: string): UseInterviewReturn {
     placeholderData: keepPreviousData,
   })
 
-  // Find active section and question
-  const activeSection = state?.sections.find((s) => s.status === 'active') || null
+  const currentRound = state?.currentRound ?? 1
+
+  // Find active section and question (filtered to current round)
+  const activeSection = state?.sections.filter((s) => (s.round ?? 1) === currentRound).find((s) => s.status === 'active') || null
   const activeQuestion = activeSection?.questions.find((q) => q.status === 'active') || null
 
-  // Collect all messages across all sections/questions for continuous display
+  // Collect messages from current round for display
   const allMessages = (() => {
     if (!state) return []
     const msgs: Array<{ role: string; content: string; id?: string }> = []
-    for (const section of state.sections) {
+    const roundSections = state.sections.filter((s) => (s.round ?? 1) === currentRound)
+    for (const section of roundSections) {
       for (const question of section.questions) {
         for (const msg of question.messages) {
           msgs.push({ role: msg.role, content: msg.content, id: msg.id })
@@ -59,6 +63,28 @@ export function useInterview(forgeId: string): UseInterviewReturn {
     }
     return msgs
   })()
+
+  const invalidateInterview = useCallback(() => {
+    queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
+  }, [forgeId, queryClient])
+
+  const appendExtractions = useCallback((items: Array<{ id: string; type: string; content: string; confidence: number; tags?: string[] | null }>) => {
+    setLiveExtractions((prev) => [
+      ...prev,
+      ...items.map((item) => ({
+        id: item.id,
+        forgeId,
+        sectionId: null,
+        questionId: null,
+        type: item.type,
+        content: item.content,
+        confidence: item.confidence,
+        tags: item.tags || null,
+        createdAt: new Date().toISOString(),
+      })),
+    ])
+    invalidateInterview()
+  }, [forgeId, invalidateInterview])
 
   const handleSendMessage = useCallback((content: string) => {
     if (isStreaming || !forgeId) return
@@ -77,34 +103,19 @@ export function useInterview(forgeId: string): UseInterviewReturn {
           case 'done':
             setStreamingContent('')
             setIsStreaming(false)
-            queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
+            invalidateInterview()
             break
           case 'extraction':
-            setLiveExtractions((prev) => [
-              ...prev,
-              ...event.items.map((item) => ({
-                id: item.id,
-                forgeId,
-                sectionId: null,
-                questionId: null,
-                type: item.type,
-                content: item.content,
-                confidence: item.confidence,
-                tags: item.tags || null,
-                createdAt: new Date().toISOString(),
-              })),
-            ])
-            queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
+            appendExtractions(event.items)
             break
           case 'advance':
-            queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
+            invalidateInterview()
             break
           case 'interview_complete':
             setInterviewComplete(true)
-            queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
+            invalidateInterview()
             break
           case 'validation':
-            // Validation handled implicitly through advance/complete events
             break
           case 'error':
             console.error('SSE error:', event.message)
@@ -120,37 +131,22 @@ export function useInterview(forgeId: string): UseInterviewReturn {
         setIsStreaming(false)
       }
     )
-  }, [forgeId, isStreaming, queryClient])
+  }, [forgeId, isStreaming, invalidateInterview, appendExtractions])
 
   const handleGenerateOpening = useCallback(async () => {
     await generateOpening(forgeId)
-    queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
-  }, [forgeId, queryClient])
+    invalidateInterview()
+  }, [forgeId, invalidateInterview])
 
   const handleComplete = useCallback(async () => {
     await completeInterview(forgeId)
     setInterviewComplete(true)
-    queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
-  }, [forgeId, queryClient])
+    invalidateInterview()
+  }, [forgeId, invalidateInterview])
 
   const addLiveExtractions = useCallback((items: Array<{ id: string; type: string; content: string; confidence: number; tags: string[] | null }>) => {
-    setLiveExtractions((prev) => [
-      ...prev,
-      ...items.map((item) => ({
-        id: item.id,
-        forgeId,
-        sectionId: null,
-        questionId: null,
-        type: item.type,
-        content: item.content,
-        confidence: item.confidence,
-        tags: item.tags,
-        createdAt: new Date().toISOString(),
-      })),
-    ])
-    // Refetch interview state to update progress tracker
-    queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
-  }, [forgeId, queryClient])
+    appendExtractions(items)
+  }, [appendExtractions])
 
   return {
     state,
@@ -167,5 +163,6 @@ export function useInterview(forgeId: string): UseInterviewReturn {
     handleComplete,
     addLiveExtractions,
     interviewComplete,
+    currentRound,
   }
 }

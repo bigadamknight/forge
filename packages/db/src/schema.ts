@@ -4,6 +4,7 @@ import {
   text,
   timestamp,
   integer,
+  smallint,
   real,
   jsonb,
   index,
@@ -14,8 +15,6 @@ import type {
   KnowledgeBase,
   ValidationResult,
   SectionSummary,
-  ExtractionType,
-  EXTRACTION_TYPES,
   InterviewDepth,
 } from "@forge/shared"
 
@@ -60,6 +59,7 @@ export const interviewSections = pgTable(
     goal: text("goal"),
     orderIndex: integer("order_index").notNull(),
     summary: jsonb("summary").$type<SectionSummary>(),
+    round: smallint("round").default(1).notNull(),
     status: text("status", {
       enum: ["pending", "active", "completed", "skipped"],
     })
@@ -144,6 +144,7 @@ export const extractions = pgTable(
     structured: jsonb("structured"),
     confidence: real("confidence").default(0.8),
     tags: jsonb("tags").$type<string[]>(),
+    round: smallint("round").default(1).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [

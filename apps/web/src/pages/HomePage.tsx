@@ -152,11 +152,9 @@ export default function HomePage() {
 function ForgeCard({ forge, onDelete }: { forge: Forge; onDelete: () => void }) {
   const statusStyle = STATUS_COLORS[forge.status] || STATUS_COLORS.draft
 
-  const getLink = () => {
-    if (forge.status === 'complete') return `/forge/${forge.id}/tool`
-    if (forge.status === 'interviewing') return `/forge/${forge.id}/interview`
-    return `/forge/${forge.id}/interview`
-  }
+  const link = forge.status === 'complete'
+    ? `/forge/${forge.id}/tool`
+    : `/forge/${forge.id}/interview`
 
   return (
     <div className="bg-slate-800  p-4 hover:bg-slate-750 transition-colors group">
@@ -168,7 +166,7 @@ function ForgeCard({ forge, onDelete }: { forge: Forge; onDelete: () => void }) 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <h3 className="font-medium truncate">{forge.title}</h3>
-            <span className={`px-2 py-0.5 text-xs${statusStyle}`}>
+            <span className={`px-2 py-0.5 text-xs ${statusStyle}`}>
               {forge.status}
             </span>
           </div>
@@ -189,8 +187,8 @@ function ForgeCard({ forge, onDelete }: { forge: Forge; onDelete: () => void }) 
             <Trash2 className="w-4 h-4" />
           </button>
           <Link
-            to={getLink()}
-            className="flex items-center gap-1 px-3 py-1.5 bg-orange-600 hover:bg-orange-700text-sm transition-colors"
+            to={link}
+            className="flex items-center gap-1 px-3 py-1.5 bg-orange-600 hover:bg-orange-700 text-sm transition-colors"
           >
             Continue
             <ArrowRight className="w-3 h-3" />

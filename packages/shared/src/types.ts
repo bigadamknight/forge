@@ -190,6 +190,27 @@ export interface CustomConfig extends BaseComponentConfig {
   sections: CustomSection[]
 }
 
+export interface QuizConfig extends BaseComponentConfig {
+  type: "quiz"
+  mode: "knowledge_check" | "scenario"
+  questions: Array<{
+    id: string
+    text: string
+    scenario?: string
+    options: Array<{
+      id: string
+      text: string
+      correct: boolean
+      explanation?: string
+    }>
+    multipleCorrect?: boolean
+  }>
+  showImmediateFeedback: boolean
+  showScoreAtEnd: boolean
+  passingScore?: number
+  _quizAnswers?: Record<string, string[]>
+}
+
 export interface TaskBoardTask {
   id: string
   text: string
@@ -215,6 +236,7 @@ export type ToolComponent =
   | StepByStepConfig
   | QuestionFlowConfig
   | CustomConfig
+  | QuizConfig
   | TaskBoardConfig
 
 // ============ Extraction Types ============

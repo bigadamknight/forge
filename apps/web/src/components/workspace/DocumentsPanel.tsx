@@ -81,7 +81,6 @@ export default function DocumentsPanel({ forgeId }: DocumentsPanelProps) {
         </p>
       </div>
 
-      {/* Input mode toggle */}
       <div className="flex gap-2 mb-4">
         <button
           onClick={() => setInputMode('text')}
@@ -107,7 +106,6 @@ export default function DocumentsPanel({ forgeId }: DocumentsPanelProps) {
         </button>
       </div>
 
-      {/* Input form */}
       <div className="bg-slate-800/50 border border-slate-700/50 p-5 mb-6 space-y-4">
         <div>
           <label className="text-sm text-slate-300 font-medium mb-1.5 block">Title</label>
@@ -160,7 +158,6 @@ export default function DocumentsPanel({ forgeId }: DocumentsPanelProps) {
         )}
       </div>
 
-      {/* Document list */}
       {isLoading && (
         <div className="flex items-center gap-2 text-slate-500 text-sm py-4">
           <Loader2 className="w-4 h-4 animate-spin" />

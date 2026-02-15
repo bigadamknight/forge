@@ -1,6 +1,12 @@
 import { CheckCircle2, Circle, PlayCircle } from 'lucide-react'
 import type { InterviewState } from '../../lib/api'
 
+function SectionStatusIcon({ isCompleted, isActive }: { isCompleted: boolean; isActive: boolean }) {
+  if (isCompleted) return <CheckCircle2 className="w-4 h-4 text-green-400" />
+  if (isActive) return <PlayCircle className="w-4 h-4 text-orange-400" />
+  return <Circle className="w-4 h-4 text-slate-500" />
+}
+
 interface AgendaTrackerProps {
   sections: InterviewState['sections']
 }
@@ -40,19 +46,11 @@ export default function AgendaTracker({ sections }: AgendaTrackerProps) {
               className={`flex items-start gap-3 px-3 py-2  transition-colors ${
                 isActive
                   ? 'bg-orange-500/10 border border-orange-500/20'
-                  : isCompleted
-                    ? 'opacity-60'
-                    : 'opacity-40'
+                  : isCompleted ? 'opacity-60' : 'opacity-40'
               }`}
             >
               <div className="mt-0.5">
-                {isCompleted ? (
-                  <CheckCircle2 className="w-4 h-4 text-green-400" />
-                ) : isActive ? (
-                  <PlayCircle className="w-4 h-4 text-orange-400" />
-                ) : (
-                  <Circle className="w-4 h-4 text-slate-500" />
-                )}
+                <SectionStatusIcon isCompleted={isCompleted} isActive={isActive} />
               </div>
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between">
@@ -66,26 +64,22 @@ export default function AgendaTracker({ sections }: AgendaTrackerProps) {
                 {isActive && (
                   <div className="mt-1.5 space-y-1">
                     {section.questions.map((q) => {
-                      const isActiveQ = q.status === 'active'
-                      const isAnswered = q.status === 'answered'
+                      const textStyle = q.status === 'active'
+                        ? 'text-orange-300'
+                        : q.status === 'answered'
+                          ? 'text-slate-500 line-through'
+                          : 'text-slate-600'
+                      const dotStyle = q.status === 'active'
+                        ? 'bg-orange-400'
+                        : q.status === 'answered'
+                          ? 'bg-green-500/50'
+                          : 'bg-slate-600'
                       return (
                         <div
                           key={q.id}
-                          className={`flex items-center gap-2 text-xs ${
-                            isActiveQ
-                              ? 'text-orange-300'
-                              : isAnswered
-                                ? 'text-slate-500 line-through'
-                                : 'text-slate-600'
-                          }`}
+                          className={`flex items-center gap-2 text-xs ${textStyle}`}
                         >
-                          <div className={`w-1.5 h-1.5  ${
-                            isActiveQ
-                              ? 'bg-orange-400'
-                              : isAnswered
-                                ? 'bg-green-500/50'
-                                : 'bg-slate-600'
-                          }`} />
+                          <div className={`w-1.5 h-1.5  ${dotStyle}`} />
                           <span className="truncate">{q.text}</span>
                         </div>
                       )

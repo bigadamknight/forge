@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageCircle, X, Send, Mic, Loader2, Volume2, Sparkles } from 'lucide-react'
 import { useConversation } from '@elevenlabs/react'
 import ReactMarkdown from 'react-markdown'
-import { refineTool, getToolVoiceSession, type RefineResult } from '../../lib/api'
+import { refineTool, askExpert, getToolVoiceSession, type RefineResult } from '../../lib/api'
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -65,7 +65,15 @@ export default function ChatSidebar({
   const findComponent = (id: string) =>
     layoutRef.current.find((c) => (c as any).id === id) as Record<string, any> | undefined
 
-  const clientTools = useRef({
+  // Panel chats only get navigate_to_section; widget gets all tools
+  const chatOnlyTools = useRef({
+    navigate_to_section: (params: any) => {
+      onNavigateRef.current?.(params.component_id)
+      return 'Navigated'
+    },
+  }).current
+
+  const widgetTools = useRef({
     toggle_checklist_items: (params: any) => {
       const config = findComponent(params.component_id)
       if (!config || config.type !== 'checklist') return 'Component not found'
@@ -118,11 +126,24 @@ export default function ChatSidebar({
       return `Set ${params.input_id} to ${params.value}`
     },
 
+    answer_quiz: (params: any) => {
+      const config = findComponent(params.component_id)
+      if (!config || config.type !== 'quiz') return 'Component not found'
+      const quizAnswers = { ...((config._quizAnswers as Record<string, string[]>) || {}), [params.question_id]: [params.option_id] }
+      onComponentUpdateRef.current?.(params.component_id, { ...config, _quizAnswers: quizAnswers })
+      const question = (config.questions as any[])?.find((q: any) => q.id === params.question_id)
+      const option = question?.options?.find((o: any) => o.id === params.option_id)
+      if (option?.correct) return 'Correct!'
+      return option?.explanation || 'Incorrect'
+    },
+
     navigate_to_section: (params: any) => {
       onNavigateRef.current?.(params.component_id)
       return 'Navigated'
     },
   }).current
+
+  const clientTools = isPanel ? chatOnlyTools : widgetTools
 
   // ---- Text refine handler ----
 
@@ -186,9 +207,9 @@ export default function ChatSidebar({
     }
   }, [messages, storageKey])
 
-  // Send contextual update when active tab changes
+  // Send contextual update when active tab changes (widget only)
   useEffect(() => {
-    if (!voiceMode || conversation.status !== 'connected') return
+    if (isPanel || !voiceMode || conversation.status !== 'connected') return
     const activeConfig = layout.find((c) => (c as any).id === activeComponentId) as Record<string, any> | undefined
     if (!activeConfig) {
       conversation.sendContextualUpdate(
@@ -224,6 +245,11 @@ export default function ChatSidebar({
           `${i.id}="${i.label}" (${i.type})`
         ).join(', ')}`
         break
+      case 'quiz':
+        detail = `Questions: ${(activeConfig.questions as any[])?.map((q: any) =>
+          `${q.id}="${q.text}" [${(q.options as any[])?.map((o: any) => `${o.id}:"${o.text}"${o.correct ? '(correct)' : ''}`).join(', ')}]`
+        ).join('; ')}`
+        break
     }
 
     conversation.sendContextualUpdate(
@@ -242,18 +268,32 @@ export default function ChatSidebar({
     setIsLoading(true)
 
     try {
-      const result = await handleRefine(userMsg)
-      if (result) {
+      if (isPanel) {
+        // Panel chat: knowledge-first, no component manipulation
+        const sections = layoutRef.current.map((c: any) => `${c.title} (${c.type})`).join(', ')
+        const ctx = sections
+          ? `The user is chatting generally. Available guide sections they can explore: ${sections}`
+          : undefined
+        const result = await askExpert(forgeId, userMsg, userContext, ctx)
         setMessages((prev) => [...prev, {
           role: 'assistant',
-          content: result.response,
-          action: result.action,
+          content: result.answer,
         }])
       } else {
-        setMessages((prev) => [...prev, {
-          role: 'assistant',
-          content: 'Sorry, I couldn\'t process that request.',
-        }])
+        // Floating widget: interactive, can update components
+        const result = await handleRefine(userMsg)
+        if (result) {
+          setMessages((prev) => [...prev, {
+            role: 'assistant',
+            content: result.response,
+            action: result.action,
+          }])
+        } else {
+          setMessages((prev) => [...prev, {
+            role: 'assistant',
+            content: 'Sorry, I couldn\'t process that request.',
+          }])
+        }
       }
     } finally {
       setIsLoading(false)
@@ -269,7 +309,7 @@ export default function ChatSidebar({
 
     setVoiceLoading(true)
     try {
-      const session = await getToolVoiceSession(forgeId)
+      const session = await getToolVoiceSession(forgeId, isPanel ? 'chat' : 'widget')
       await conversation.startSession({
         agentId: session.agentId,
         connectionType: "websocket" as const,
@@ -289,10 +329,9 @@ export default function ChatSidebar({
     }
   }
 
-  // ---- Render ----
+  if (hidden) return null
 
-  if (!isPanel && (hidden || !isOpen)) {
-    if (hidden) return null
+  if (!isPanel && !isOpen) {
     return (
       <button
         onClick={() => setIsOpen(true)}
@@ -308,7 +347,6 @@ export default function ChatSidebar({
       ? 'flex flex-col h-full'
       : 'fixed bottom-6 right-6 w-96 h-[600px] bg-slate-900 border border-slate-700/50 shadow-2xl flex flex-col z-50 overflow-hidden'
     }>
-      {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-slate-700/50 shrink-0">
         <div className="flex items-center gap-2">
           <MessageCircle className="w-4 h-4 text-orange-400" />
@@ -330,7 +368,6 @@ export default function ChatSidebar({
         )}
       </div>
 
-      {/* Active context badge */}
       {activeComponentTitle && (
         <div className="px-4 py-2 border-b border-slate-700/30 bg-slate-800/30">
           <span className="text-xs text-slate-500">
@@ -339,13 +376,21 @@ export default function ChatSidebar({
         </div>
       )}
 
-      {/* Messages */}
       <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {messages.length === 0 && (
           <div className="text-center text-slate-500 text-sm py-8">
             <MessageCircle className="w-8 h-8 mx-auto mb-2 opacity-30" />
-            <p>Ask questions or suggest changes.</p>
-            <p className="text-xs mt-1">The tool updates as you talk.</p>
+            {isPanel ? (
+              <>
+                <p>Ask the expert anything.</p>
+                <p className="text-xs mt-1">Get advice, ask questions, explore the topic.</p>
+              </>
+            ) : (
+              <>
+                <p>Ask questions or suggest changes.</p>
+                <p className="text-xs mt-1">The tool updates as you talk.</p>
+              </>
+            )}
           </div>
         )}
         {messages.map((msg, idx) => (
@@ -382,7 +427,6 @@ export default function ChatSidebar({
                 )}
               </div>
             </div>
-            {/* Component update indicator */}
             {msg.action?.changeDescription && (
               <div className="flex justify-start mt-1">
                 <div className="flex items-center gap-1.5 px-2.5 py-1 bg-orange-500/10 border border-orange-500/20 text-xs text-orange-400">
@@ -403,7 +447,6 @@ export default function ChatSidebar({
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Voice mode indicator */}
       {voiceMode && (
         <div className="px-4 py-3 border-t border-slate-700/30 bg-green-500/5">
           <div className="flex items-center justify-between">
@@ -421,7 +464,6 @@ export default function ChatSidebar({
         </div>
       )}
 
-      {/* Input */}
       {!voiceMode && (
         <div className="px-4 py-3 border-t border-slate-700/50 shrink-0">
           <div className="flex items-center gap-2">
@@ -430,7 +472,7 @@ export default function ChatSidebar({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && !e.shiftKey && handleTextSubmit()}
-              placeholder="Ask a question or suggest a change..."
+              placeholder={isPanel ? "Ask the expert anything..." : "Ask a question or suggest a change..."}
               disabled={isLoading}
               className="flex-1 px-3 py-2 bg-slate-800 border border-slate-700/50  text-sm text-white placeholder-slate-500 focus:border-orange-500 focus:outline-none transition-colors"
             />

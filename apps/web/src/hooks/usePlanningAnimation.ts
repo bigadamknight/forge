@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
-import { createForge, planInterviewStream, type PlanInterviewEvent } from '../lib/api'
+import { createForge, planInterviewStream, getPlanningNodes, type PlanInterviewEvent } from '../lib/api'
 
 export type PlanningStage = 'form' | 'creating' | 'analysing' | 'sections' | 'questions' | 'saving' | 'complete' | 'error'
 
@@ -20,6 +20,8 @@ export interface PlanningState {
   forgeId: string | null
   errorMessage: string | null
   sectionsWithQuestions: number
+  formContext: { expertName: string; domain: string; targetAudience: string; depth: string } | null
+  constellationNodes: string[]
 }
 
 const INITIAL_STATE: PlanningState = {
@@ -31,6 +33,8 @@ const INITIAL_STATE: PlanningState = {
   forgeId: null,
   errorMessage: null,
   sectionsWithQuestions: 0,
+  formContext: null,
+  constellationNodes: [],
 }
 
 interface FormData {
@@ -97,17 +101,36 @@ export function usePlanningAnimation(onComplete: (forgeId: string) => void) {
   }, [])
 
   const handleStart = useCallback(async (formData: FormData) => {
-    setState({ ...INITIAL_STATE, stage: 'creating' })
-
-    try {
-      const forge = await createForge({
-        title: `${formData.domain} - ${formData.expertName}`,
+    setState({
+      ...INITIAL_STATE,
+      stage: 'creating',
+      formContext: {
         expertName: formData.expertName,
-        expertBio: formData.expertBio,
         domain: formData.domain,
         targetAudience: formData.targetAudience,
         depth: formData.depth,
-      })
+      },
+    })
+
+    try {
+      // Fire planning text and forge creation in parallel
+      const [forge] = await Promise.all([
+        createForge({
+          title: `${formData.domain} - ${formData.expertName}`,
+          expertName: formData.expertName,
+          expertBio: formData.expertBio,
+          domain: formData.domain,
+          targetAudience: formData.targetAudience,
+          depth: formData.depth,
+        }),
+        getPlanningNodes({
+          expertName: formData.expertName,
+          domain: formData.domain,
+          targetAudience: formData.targetAudience,
+        }).then((result) => {
+          setState((s) => ({ ...s, constellationNodes: result.nodes }))
+        }).catch(() => {}),
+      ])
 
       abortRef.current = planInterviewStream(
         forge.id,

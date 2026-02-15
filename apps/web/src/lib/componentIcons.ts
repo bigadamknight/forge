@@ -11,6 +11,7 @@ import {
   ShieldAlert,
   KanbanSquare,
   Puzzle,
+  Brain,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -26,6 +27,7 @@ export const COMPONENT_ICONS: Record<string, LucideIcon> = {
   context_panel: BookOpen,
   risk_assessment: ShieldAlert,
   task_board: KanbanSquare,
+  quiz: Brain,
   custom: Puzzle,
 }
 

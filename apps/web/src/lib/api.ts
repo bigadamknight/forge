@@ -51,6 +51,7 @@ export interface InterviewSection {
   orderIndex: number
   summary: unknown
   status: string
+  round?: number
   questions: InterviewQuestion[]
 }
 
@@ -89,6 +90,7 @@ export interface InterviewState {
   forge: Forge
   sections: InterviewSection[]
   extractions: Extraction[]
+  currentRound?: number
 }
 
 // ============ Forge API ============
@@ -99,6 +101,21 @@ export function getForges(): Promise<Forge[]> {
 
 export function getForge(id: string): Promise<Forge> {
   return request(`/forges/${id}`)
+}
+
+export function getPlanningNodes(data: {
+  expertName: string
+  domain: string
+  targetAudience?: string
+}): Promise<{ nodes: string[] }> {
+  return request('/forges/planning-text', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export function seedExtractions(forgeId: string): Promise<{ seeded: number }> {
+  return request(`/forges/${forgeId}/seed-extractions`, { method: 'POST' })
 }
 
 export function createForge(data: {
@@ -143,6 +160,23 @@ export function completeInterview(forgeId: string): Promise<Forge> {
 
 export function getExtractions(forgeId: string): Promise<Extraction[]> {
   return request(`/forges/${forgeId}/extractions`)
+}
+
+export function updateExtraction(
+  forgeId: string,
+  extractionId: string,
+  data: { content?: string; type?: string; tags?: string[]; confidence?: number }
+): Promise<Extraction> {
+  return request(`/forges/${forgeId}/extractions/${extractionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+}
+
+export function deleteExtraction(forgeId: string, extractionId: string): Promise<{ deleted: boolean }> {
+  return request(`/forges/${forgeId}/extractions/${extractionId}`, {
+    method: 'DELETE',
+  })
 }
 
 // ============ SSE Stream Helper ============
@@ -360,12 +394,15 @@ export function askExpert(
   })
 }
 
-export function getToolVoiceSession(forgeId: string): Promise<{
+export function getToolVoiceSession(forgeId: string, mode: 'widget' | 'chat' = 'widget'): Promise<{
   agentId: string
   prompt: string
   firstMessage: string
 }> {
-  return request(`/forges/${forgeId}/tool/voice-session`, { method: 'POST' })
+  return request(`/forges/${forgeId}/tool/voice-session`, {
+    method: 'POST',
+    body: JSON.stringify({ mode }),
+  })
 }
 
 export interface RefineResult {
@@ -466,5 +503,54 @@ export function extractVoiceMessage(
   return request(`/forges/${forgeId}/voice-extract`, {
     method: 'POST',
     body: JSON.stringify({ content }),
+  })
+}
+
+// ============ Follow-up API ============
+
+export function suggestFollowUps(forgeId: string): Promise<{ suggestions: Array<{ topic: string; reason: string }> }> {
+  return request(`/forges/${forgeId}/suggest-followups`, { method: 'POST' })
+}
+
+export function startFollowUpStream(
+  forgeId: string,
+  topic: string,
+  onEvent: (event: PlanInterviewEvent) => void,
+  onDone: () => void,
+  onError: (error: string) => void
+): AbortController {
+  return streamSSE(
+    `${API_BASE}/forges/${forgeId}/follow-up`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ topic }),
+    },
+    onEvent,
+    onDone,
+    onError
+  )
+}
+
+export function integrateKnowledge(forgeId: string, round: number): Promise<{
+  proposals: Array<{
+    type: 'update' | 'new'
+    componentId?: string
+    componentType?: string
+    title: string
+    description: string
+    preview: Record<string, unknown>
+  }>
+}> {
+  return request(`/forges/${forgeId}/integrate-knowledge`, {
+    method: 'POST',
+    body: JSON.stringify({ round }),
+  })
+}
+
+export function applyToolUpdates(forgeId: string, proposals: Array<Record<string, unknown>>): Promise<{ ok: boolean }> {
+  return request(`/forges/${forgeId}/apply-updates`, {
+    method: 'POST',
+    body: JSON.stringify({ proposals }),
   })
 }

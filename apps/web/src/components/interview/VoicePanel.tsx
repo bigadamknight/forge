@@ -31,9 +31,9 @@ function statusDotColor(status: string): string {
   return 'bg-slate-500'
 }
 
-function statusText(isConnected: boolean, isConnecting: boolean, isDisconnected: boolean): string {
-  if (isConnecting) return 'Connecting...'
-  if (isConnected) return 'Voice interview active'
+function statusText(status: string, isDisconnected: boolean): string {
+  if (status === 'connecting') return 'Connecting...'
+  if (status === 'connected') return 'Voice interview active'
   if (isDisconnected) return 'Session ended — continue or finish?'
   return 'Starting...'
 }
@@ -188,7 +188,6 @@ export default function VoicePanel({ agentId, sessionConfig, forgeId, expertName
   }
 
   const isConnected = conversation.status === 'connected'
-  const isConnecting = conversation.status === 'connecting'
 
   return (
     <div className="flex flex-col h-full">
@@ -199,7 +198,7 @@ export default function VoicePanel({ agentId, sessionConfig, forgeId, expertName
         <div className="flex items-center gap-3">
           <div className={`w-3 h-3  ${statusDotColor(conversation.status)}`} />
           <span className="text-sm text-slate-300">
-            {statusText(isConnected, isConnecting, isDisconnected)}
+            {statusText(conversation.status, isDisconnected)}
           </span>
         </div>
         {conversation.isSpeaking && (

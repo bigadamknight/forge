@@ -1,29 +1,15 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Flame, Loader2, Sparkles, Wrench, Check, RefreshCw, Pencil, Save, X, LayoutDashboard, ChevronRight, Circle, CheckCircle, Trash2, ArrowUp, ArrowDown } from 'lucide-react'
-import ScatteredText from '../components/ScatteredText'
+import { ArrowLeft, Flame, Loader2, Sparkles, Wrench, Check, RefreshCw, Pencil, Save, X, ChevronRight, Circle, CheckCircle, Trash2, ArrowUp, ArrowDown, Share2, Copy } from 'lucide-react'
+import KnowledgeConstellation from '../components/KnowledgeConstellation'
 import { askExpert, type ToolPlan, type ToolPlanComponent } from '../lib/api'
-import type {
-  DecisionTreeConfig,
-  ChecklistConfig,
-  CalculatorConfig,
-  InfoCardConfig,
-  StepByStepConfig,
-  QuestionFlowConfig,
-  CustomConfig,
-} from '@forge/shared'
 import { useToolDashboard } from '../hooks/useToolDashboard'
 import { useToolEditor } from '../hooks/useToolEditor'
-import DecisionTree from '../components/toolkit/DecisionTree'
-import Checklist from '../components/toolkit/Checklist'
-import Calculator from '../components/toolkit/Calculator'
-import InfoCard from '../components/toolkit/InfoCard'
-import StepByStep from '../components/toolkit/StepByStep'
-import QuestionFlow from '../components/toolkit/QuestionFlow'
-import Custom from '../components/toolkit/Custom'
+import { renderTabComponent, COMPONENT_TYPE_LABELS } from '../lib/renderComponent'
 import ChatSidebar from '../components/toolkit/ChatSidebar'
 import WorkspaceSidebar from '../components/workspace/WorkspaceSidebar'
 import DocumentsPanel from '../components/workspace/DocumentsPanel'
+import KnowledgePanel from '../components/workspace/KnowledgePanel'
 import InterviewSummaryPanel from '../components/workspace/InterviewSummaryPanel'
 
 export default function ToolViewPage() {
@@ -32,17 +18,10 @@ export default function ToolViewPage() {
   const [userContext, setUserContext] = useState<Record<string, unknown>>({})
   const [expertAnswers, setExpertAnswers] = useState<Record<string, string>>({})
   const [loadingFlows, setLoadingFlows] = useState<Record<string, boolean>>({})
-  const [devMode, setDevMode] = useState(false)
-
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setDevMode((v) => !v)
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [])
   const [showRegenModal, setShowRegenModal] = useState(false)
   const [regenConfirmText, setRegenConfirmText] = useState('')
+  const [showShareModal, setShowShareModal] = useState(false)
+  const [shareCopied, setShareCopied] = useState(false)
 
   const {
     data,
@@ -62,8 +41,14 @@ export default function ToolViewPage() {
     handleCompletionChange,
     handleTabChange,
     documents,
+    extractions,
+    forge: forgeData,
+    constellationNodes,
     chats,
     createChat,
+    deleteChat,
+    interviewRounds,
+    followUpSuggestions,
   } = useToolDashboard(forgeId!)
 
   const {
@@ -162,6 +147,7 @@ export default function ToolViewPage() {
       <GenerationStateView
         generationProgress={generationProgress}
         onStartPlanning={startPlanning}
+        constellationNodes={constellationNodes}
       />
     )
   }
@@ -185,7 +171,7 @@ export default function ToolViewPage() {
       {/* Header */}
       <header className="sticky top-0 z-10 bg-slate-900/90 backdrop-blur-sm border-b border-slate-700/50 shrink-0">
         <div className="px-6 py-3 flex items-center gap-4">
-          <Link to="/" className="text-slate-400 hover:text-white transition-colors">
+          <Link to="/forges" className="text-slate-400 hover:text-white transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </Link>
           <div className="flex items-center gap-2">
@@ -221,6 +207,13 @@ export default function ToolViewPage() {
             ) : (
               <>
                 <button
+                  onClick={() => { setShowShareModal(true); setShareCopied(false) }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 hover:text-green-400 bg-slate-800 hover:bg-slate-700 border border-slate-700/50  transition-colors"
+                >
+                  <Share2 className="w-3.5 h-3.5" />
+                  Share
+                </button>
+                <button
                   onClick={handleToggleEdit}
                   disabled={activePanel.type !== 'component'}
                   className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-slate-400 hover:text-blue-400 bg-slate-800 hover:bg-slate-700 border border-slate-700/50  transition-colors disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:text-slate-400"
@@ -248,10 +241,17 @@ export default function ToolViewPage() {
         <div className="bg-slate-900/95 border-b border-slate-700/50">
           <div className="px-6 py-6">
             {generationProgress.step === 'planning' && (
-              <div className="flex items-center gap-3 text-slate-400">
-                <Loader2 className="w-5 h-5 animate-spin text-orange-400 shrink-0" />
-                <span className="text-sm">Planning new tool structure...</span>
-              </div>
+              constellationNodes.length > 0 ? (
+                <KnowledgeConstellation
+                  nodes={constellationNodes}
+                  subtitle="Planning your interactive guide..."
+                />
+              ) : (
+                <div className="flex items-center gap-3 text-slate-400">
+                  <Loader2 className="w-5 h-5 animate-spin text-orange-400 shrink-0" />
+                  <span className="text-sm">Planning new tool structure...</span>
+                </div>
+              )
             )}
             {generationProgress.step === 'error' && (
               <div className="flex items-center gap-3">
@@ -311,12 +311,15 @@ export default function ToolViewPage() {
         <WorkspaceSidebar
           tabs={tabs}
           documents={documents}
+          extractionCount={extractions.length}
           chats={chats}
           overallProgress={overallProgress}
           activePanel={activePanel}
+          interviewRounds={interviewRounds}
           onPanelChange={setActivePanel}
           onAddDocument={() => setActivePanel({ type: 'documents' })}
           onNewChat={createChat}
+          onDeleteChat={deleteChat}
         />
 
         {/* Main panel */}
@@ -438,14 +441,18 @@ export default function ToolViewPage() {
               <DocumentsPanel forgeId={forgeId!} />
             )}
 
+            {/* Knowledge panel */}
+            {activePanel.type === 'knowledge' && (
+              <KnowledgePanel forgeId={forgeId!} />
+            )}
+
             {/* Chat panel */}
             {activePanel.type === 'chat' && (
               <div className="h-[calc(100vh-8rem)]">
                 <ChatSidebar
                   forgeId={forgeId!}
                   chatId={activePanel.chatId}
-                  activeComponentId={activeTab?.id || null}
-                  activeComponentTitle={activeTab?.title}
+                  activeComponentId={null}
                   layout={editableLayout}
                   userContext={userContext}
                   variant="panel"
@@ -457,13 +464,64 @@ export default function ToolViewPage() {
 
             {/* Interview summary panel */}
             {activePanel.type === 'interview' && (
-              <InterviewSummaryPanel forgeId={forgeId!} />
+              <InterviewSummaryPanel
+                forgeId={forgeId!}
+                forge={forgeData}
+                interviewRounds={interviewRounds}
+              />
             )}
           </div>
         </div>
       </div>
 
       {/* Regenerate confirmation modal */}
+      {showShareModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowShareModal(false)}>
+          <div className="bg-slate-800 border border-slate-700 p-6 max-w-md w-full mx-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-green-500/10 flex items-center justify-center shrink-0">
+                  <Share2 className="w-5 h-5 text-green-400" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-white">Share Tool</h3>
+                  <p className="text-sm text-slate-400">Anyone with this link can use the tool</p>
+                </div>
+              </div>
+              <button onClick={() => setShowShareModal(false)} className="p-1 text-slate-400 hover:text-white transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                readOnly
+                value={`${window.location.origin}/tool/${forgeId}`}
+                className="flex-1 px-3 py-2 bg-slate-900 border border-slate-600 text-sm text-white focus:outline-none font-mono"
+              />
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(`${window.location.origin}/tool/${forgeId}`)
+                  setShareCopied(true)
+                  setTimeout(() => setShareCopied(false), 2000)
+                }}
+                className={`flex items-center gap-1.5 px-4 py-2 text-sm transition-colors shrink-0 ${
+                  shareCopied
+                    ? 'bg-green-600 text-white'
+                    : 'bg-orange-600 hover:bg-orange-700 text-white'
+                }`}
+              >
+                {shareCopied ? (
+                  <><Check className="w-4 h-4" /> Copied</>
+                ) : (
+                  <><Copy className="w-4 h-4" /> Copy</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {showRegenModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
           <div className="bg-slate-800 border border-slate-700  p-6 max-w-md w-full mx-4 shadow-2xl">
@@ -538,9 +596,11 @@ function progressPercent(current: number, total: number): number {
 function GenerationStateView({
   generationProgress,
   onStartPlanning,
+  constellationNodes,
 }: {
   generationProgress: ReturnType<typeof useToolDashboard>['generationProgress']
   onStartPlanning: () => void
+  constellationNodes: string[]
 }) {
   const step = generationProgress?.step
 
@@ -560,7 +620,7 @@ function GenerationStateView({
               Try Again
             </button>
             <div className="mt-4">
-              <Link to="/" className="text-slate-500 hover:text-slate-300 text-sm">
+              <Link to="/forges" className="text-slate-500 hover:text-slate-300 text-sm">
                 Back to Home
               </Link>
             </div>
@@ -612,18 +672,16 @@ function GenerationStateView({
         )}
 
         {step === 'planning' && (
-          <>
-            <ScatteredText
-              phrases={[
-                'Analysing expert knowledge',
-                'Designing interactive guide',
-                'Structuring components',
-                'Planning the experience',
-              ]}
-              className="text-5xl md:text-7xl font-semibold text-orange-400 mb-6 min-h-[4rem] whitespace-nowrap"
+          constellationNodes.length > 0 ? (
+            <KnowledgeConstellation
+              nodes={constellationNodes}
+              subtitle="Planning your interactive guide..."
             />
-            <p className="text-slate-500 text-sm">This takes a moment</p>
-          </>
+          ) : (
+            <div className="text-slate-500 text-sm animate-pulse">
+              Planning your interactive guide...
+            </div>
+          )
         )}
 
         {!step && (
@@ -641,7 +699,7 @@ function GenerationStateView({
               Start Generation
             </button>
             <div className="mt-4">
-              <Link to="/" className="text-slate-500 hover:text-slate-300 text-sm">
+              <Link to="/forges" className="text-slate-500 hover:text-slate-300 text-sm">
                 Back to Home
               </Link>
             </div>
@@ -650,16 +708,6 @@ function GenerationStateView({
       </div>
     </div>
   )
-}
-
-const COMPONENT_TYPE_LABELS: Record<string, string> = {
-  decision_tree: 'Decision Tree',
-  checklist: 'Checklist',
-  step_by_step: 'Step by Step',
-  calculator: 'Calculator',
-  question_flow: 'Question Flow',
-  custom: 'Custom',
-  info_card: 'Info Card',
 }
 
 function PlanReview({
@@ -719,7 +767,7 @@ function PlanReview({
     <div className="h-screen flex flex-col">
       <header className="sticky top-0 z-10 bg-slate-900/90 backdrop-blur-sm border-b border-slate-700/50 shrink-0">
         <div className="px-6 py-3 flex items-center gap-4">
-          <Link to="/" className="text-slate-400 hover:text-white transition-colors">
+          <Link to="/forges" className="text-slate-400 hover:text-white transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </Link>
           <div className="flex items-center gap-2">
@@ -864,83 +912,3 @@ function PlanReview({
   )
 }
 
-function renderTabComponent({
-  config,
-  id,
-  type,
-  title,
-  forgeId,
-  userContext,
-  expertAnswers,
-  loadingFlows,
-  editMode,
-  onConfigChange,
-  onContextChange,
-  onComplete,
-  onQuestionFlowComplete,
-}: {
-  config: Record<string, unknown>
-  id: string
-  type: string
-  title: string
-  forgeId: string
-  userContext: Record<string, unknown>
-  expertAnswers: Record<string, string>
-  loadingFlows: Record<string, boolean>
-  editMode: boolean
-  onConfigChange: (config: Record<string, unknown>) => void
-  onContextChange: (context: Record<string, unknown>) => void
-  onComplete: (done: boolean) => void
-  onQuestionFlowComplete: (id: string, data: { answers: Record<string, unknown>; question: string }, title: string) => void
-}) {
-  const editProps = { editMode, onConfigChange: onConfigChange as any }
-
-  switch (type) {
-    case 'decision_tree':
-      return <DecisionTree config={config as unknown as DecisionTreeConfig} onComplete={onComplete} {...editProps} />
-    case 'checklist':
-      return <Checklist config={config as unknown as ChecklistConfig} onComplete={onComplete} {...editProps} />
-    case 'calculator':
-      return <Calculator config={config as unknown as CalculatorConfig} onComplete={onComplete} {...editProps} />
-    case 'info_card':
-      return <InfoCard config={config as unknown as InfoCardConfig} onComplete={onComplete} {...editProps} />
-    case 'step_by_step':
-      return <StepByStep config={config as unknown as StepByStepConfig} onComplete={onComplete} {...editProps} />
-    case 'question_flow':
-      return (
-        <>
-          <QuestionFlow
-            config={config as unknown as QuestionFlowConfig}
-            onAnswered={onComplete}
-            onComplete={(data) => onQuestionFlowComplete(id, data, title)}
-            {...editProps}
-          />
-          {loadingFlows[id] && (
-            <div className="mt-4 flex items-center gap-2 text-orange-400 text-sm">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              Getting personalized advice...
-            </div>
-          )}
-          {expertAnswers[id] && !loadingFlows[id] && (
-            <div className="mt-4 p-4 bg-slate-700/30 border border-orange-500/20 ">
-              <div className="flex items-center gap-2 text-orange-400 text-xs font-medium mb-2">
-                <Sparkles className="w-3.5 h-3.5" />
-                Expert Advice
-              </div>
-              <p className="text-sm text-slate-200 leading-relaxed whitespace-pre-wrap">
-                {expertAnswers[id]}
-              </p>
-            </div>
-          )}
-        </>
-      )
-    case 'custom':
-      return <Custom config={config as unknown as CustomConfig} onComplete={onComplete} {...editProps} />
-    default:
-      return (
-        <div className="text-sm text-slate-500 italic">
-          Unknown component type: {type}
-        </div>
-      )
-  }
-}

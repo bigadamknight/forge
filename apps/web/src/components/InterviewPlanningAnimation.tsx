@@ -1,16 +1,8 @@
 import { useRef, useEffect } from 'react'
 import gsap from 'gsap'
 import { AlertCircle, Check, RefreshCw } from 'lucide-react'
-import ScatteredText from './ScatteredText'
+import KnowledgeConstellation from './KnowledgeConstellation'
 import type { PlanningState } from '../hooks/usePlanningAnimation'
-
-const PLANNING_PHRASES = [
-  'Analysing your expertise',
-  'Mapping knowledge areas',
-  'Designing interview structure',
-  'Identifying key topics',
-  'Crafting the right questions',
-]
 
 interface Props {
   state: PlanningState
@@ -124,17 +116,20 @@ export default function InterviewPlanningAnimation({ state, onRetry }: Props) {
     )
   }
 
-  // Creating / Analysing - scattered text stage
+  // Creating / Analysing - constellation stage
   if (state.stage === 'creating' || state.stage === 'analysing') {
     return (
       <div className="fixed inset-0 flex flex-col items-center justify-center z-10">
-        <ScatteredText
-          phrases={PLANNING_PHRASES}
-          className="text-5xl md:text-7xl font-semibold text-orange-400 mb-6 min-h-[4rem]"
-        />
-        <p className="text-slate-500 text-sm">
-          {state.stage === 'creating' ? 'Preparing workspace' : 'This takes a moment'}
-        </p>
+        {state.constellationNodes.length > 0 ? (
+          <KnowledgeConstellation
+            nodes={state.constellationNodes}
+            subtitle={state.stage === 'creating' ? 'Preparing workspace...' : 'Designing your interview...'}
+          />
+        ) : (
+          <div className="text-slate-500 text-sm animate-pulse">
+            {state.stage === 'creating' ? 'Preparing workspace...' : 'Designing your interview...'}
+          </div>
+        )}
       </div>
     )
   }

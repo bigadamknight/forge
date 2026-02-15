@@ -15,11 +15,31 @@ const server = new McpServer({
 })
 
 function textResult(data: unknown) {
-  return { content: [{ type: "text" as const, text: typeof data === "string" ? data : JSON.stringify(data, null, 2) }] }
+  const text = typeof data === "string" ? data : JSON.stringify(data, null, 2)
+  return { content: [{ type: "text" as const, text }] }
 }
 
 function errorResult(message: string) {
   return { content: [{ type: "text" as const, text: message }], isError: true as const }
+}
+
+async function findForge(forgeId: string) {
+  const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
+  return forge ?? null
+}
+
+async function getRelevantKnowledge(forgeId: string, query: string): Promise<string> {
+  const useEmbeddings = await hasEmbeddings(forgeId)
+  if (useEmbeddings) {
+    const results = await searchHybrid(forgeId, query, 15)
+    return results.map((r) => `[${r.type}] ${r.content}`).join("\n")
+  }
+  const all = await db
+    .select()
+    .from(extractions)
+    .where(eq(extractions.forgeId, forgeId))
+    .orderBy(asc(extractions.createdAt))
+  return all.map((e) => `[${e.type}] ${e.content}`).join("\n")
 }
 
 // ============ forge_list ============
@@ -68,19 +88,20 @@ server.tool(
   { forgeId: z.string() },
   // @ts-expect-error - MCP SDK Zod generics hit TS recursion limit
   async ({ forgeId }: { forgeId: string }) => {
-    const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
+    const forge = await findForge(forgeId)
     if (!forge) return errorResult("Forge not found")
 
-    const forgeExtractions = await db
-      .select({ id: extractions.id, type: extractions.type, content: extractions.content, confidence: extractions.confidence, tags: extractions.tags })
-      .from(extractions)
-      .where(eq(extractions.forgeId, forgeId))
-      .orderBy(asc(extractions.createdAt))
-
-    const forgeDocs = await db
-      .select({ id: documents.id, title: documents.title, type: documents.type })
-      .from(documents)
-      .where(eq(documents.forgeId, forgeId))
+    const [forgeExtractions, forgeDocs] = await Promise.all([
+      db
+        .select({ id: extractions.id, type: extractions.type, content: extractions.content, confidence: extractions.confidence, tags: extractions.tags })
+        .from(extractions)
+        .where(eq(extractions.forgeId, forgeId))
+        .orderBy(asc(extractions.createdAt)),
+      db
+        .select({ id: documents.id, title: documents.title, type: documents.type })
+        .from(documents)
+        .where(eq(documents.forgeId, forgeId)),
+    ])
 
     const toolConfig = forge.toolConfig as any
     const components = toolConfig?.layout?.map((c: any) => ({
@@ -100,13 +121,7 @@ server.tool(
       extractionCount: forgeExtractions.length,
       documentCount: forgeDocs.length,
       components,
-      extractions: forgeExtractions.map((e) => ({
-        id: e.id,
-        type: e.type,
-        content: e.content,
-        confidence: e.confidence,
-        tags: e.tags,
-      })),
+      extractions: forgeExtractions,
       documents: forgeDocs,
       createdAt: forge.createdAt.toISOString(),
     })
@@ -122,11 +137,11 @@ server.tool(
   async ({ forgeId, query, limit: rawLimit }: { forgeId: string; query: string; limit?: number }) => {
     const limit = Math.min(Math.max(rawLimit || 15, 1), 50)
 
-    const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
+    const forge = await findForge(forgeId)
     if (!forge) return errorResult("Forge not found")
 
     const useEmbeddings = await hasEmbeddings(forgeId)
-    let results
+    let results: import("./search").SearchResult[]
 
     if (useEmbeddings) {
       results = await searchHybrid(forgeId, query, limit)
@@ -157,11 +172,7 @@ server.tool(
       resultCount: results.length,
       searchMethod: useEmbeddings ? "hybrid (semantic + keyword)" : "keyword fallback",
       results: results.map((r) => ({
-        id: r.id,
-        type: r.type,
-        content: r.content,
-        confidence: r.confidence,
-        tags: r.tags,
+        ...r,
         score: Math.round(r.score * 1000) / 1000,
       })),
     })
@@ -178,36 +189,18 @@ server.tool(
   async ({ forgeId, question, context }: { forgeId: string; question: string; context?: string }) => {
     if (!process.env.ANTHROPIC_API_KEY) return errorResult("ANTHROPIC_API_KEY not configured")
 
-    const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
+    const forge = await findForge(forgeId)
     if (!forge) return errorResult("Forge not found")
 
-    // Get relevant extractions via hybrid search or full load
-    let expertKnowledge: string
-    const useEmbeddings = await hasEmbeddings(forgeId)
-    if (useEmbeddings) {
-      const results = await searchHybrid(forgeId, question, 15)
-      expertKnowledge = results.map((r) => `[${r.type}] ${r.content}`).join("\n")
-    } else {
-      const all = await db
-        .select()
-        .from(extractions)
-        .where(eq(extractions.forgeId, forgeId))
-        .orderBy(asc(extractions.createdAt))
-      expertKnowledge = all.map((e) => `[${e.type}] ${e.content}`).join("\n")
-    }
-
-    // Get documents
-    const allDocs = await db
-      .select()
-      .from(documents)
-      .where(eq(documents.forgeId, forgeId))
-      .orderBy(asc(documents.createdAt))
+    const [expertKnowledge, allDocs] = await Promise.all([
+      getRelevantKnowledge(forgeId, question),
+      db.select().from(documents).where(eq(documents.forgeId, forgeId)).orderBy(asc(documents.createdAt)),
+    ])
 
     const documentContext = allDocs.length > 0
       ? `\n\nSUPPORTING DOCUMENTS:\n${allDocs.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 5000)}`).join("\n\n")}`
       : ""
 
-    // Get voice transcript
     const metadata = (forge.metadata as any) || {}
     const voiceTranscript = Array.isArray(metadata.voiceTranscript)
       ? metadata.voiceTranscript

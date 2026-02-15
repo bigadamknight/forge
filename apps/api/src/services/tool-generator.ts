@@ -1,4 +1,4 @@
-import { generateJSON, HAIKU } from "../lib/llm"
+import { generateJSON, SONNET, HAIKU } from "../lib/llm"
 
 interface ExtractionItem {
   type: string
@@ -34,13 +34,9 @@ export interface ToolPlan {
   components: ToolPlanComponent[]
 }
 
-// Derive a full component spec from the slim plan entry
 export function deriveComponentSpec(entry: { type: string; focus: string }, index: number) {
   const id = `${entry.type}_${index + 1}`
-  // Title: capitalise focus as a short title
-  const title = entry.focus.length > 60
-    ? entry.focus.slice(0, 57) + '...'
-    : entry.focus
+  const title = entry.focus.length > 60 ? entry.focus.slice(0, 57) + "..." : entry.focus
   return { id, type: entry.type, title, description: entry.focus }
 }
 
@@ -84,6 +80,20 @@ const COMPONENT_SCHEMAS: Record<string, string> = {
   "questions": [{ "id": "q_id", "text": "...", "inputType": "text"|"select"|"number"|"multiselect", "options": ["..."], "placeholder": "...", "required": true/false }],
   "completionPrompt": "System prompt template for generating personalized advice based on answers"
 }`,
+  quiz: `"quiz" - For knowledge checks or scenario-based assessments
+{
+  "id": "unique_id", "type": "quiz", "title": "...", "description": "...",
+  "mode": "knowledge_check"|"scenario",
+  "questions": [{
+    "id": "q_id", "text": "Question text",
+    "scenario": "Optional scenario description (for scenario mode)",
+    "options": [{ "id": "opt_id", "text": "...", "correct": true/false, "explanation": "Why this is right/wrong" }],
+    "multipleCorrect": false
+  }],
+  "showImmediateFeedback": true,
+  "showScoreAtEnd": true,
+  "passingScore": 70
+}`,
   custom: `"custom" - For any knowledge that doesn't fit the standard types. Design a bespoke layout.
 {
   "id": "unique_id", "type": "custom", "title": "...", "description": "...",
@@ -99,8 +109,6 @@ const COMPONENT_SCHEMAS: Record<string, string> = {
 }`,
 }
 
-const ALL_COMPONENT_TYPES = Object.keys(COMPONENT_SCHEMAS).map((k, i) => `${i + 1}. ${COMPONENT_SCHEMAS[k]}`).join("\n\n")
-
 const DESIGNER_SYSTEM = `You are an expert tool designer. Your job is to select the right interactive components to make expert knowledge accessible to non-experts.
 
 Component types and when to use them:
@@ -109,6 +117,7 @@ Component types and when to use them:
 - checklist: requirements or readiness validation lists
 - step_by_step: sequential procedures and processes
 - calculator: quantitative assessments with interactive inputs and formulas
+- quiz: knowledge check or scenario-based assessment to test understanding
 - custom: bespoke layout for knowledge that doesn't fit the above types (stats, timelines, key quotes, reference material). Use this to create something unique and tailored.
 
 Rules:
@@ -116,6 +125,7 @@ Rules:
 - Order logically: intake -> assessment -> guidance -> procedures
 - Each component should map to specific knowledge from the extractions
 - Fewer, richer components are better than many shallow ones
+- Consider using "quiz" when the expert's knowledge lends itself to testing understanding (common mistakes, best practices, scenario-based decisions)
 - Consider using "custom" when the expert's knowledge has a unique structure (e.g. key statistics, timeline of events, curated quotes/principles) that would be flattened by forcing it into a standard type`
 
 // ============ JSON Schemas for Structured Output ============
@@ -187,16 +197,15 @@ const OPERATIONS_BOARD_SCHEMA = {
   additionalProperties: false,
 }
 
-// ============ Shared helpers ============
+// ============ Helpers ============
 
 export function buildKnowledgeSummary(extractions: ExtractionItem[]): string {
   const grouped: Record<string, string[]> = {}
   for (const e of extractions) {
-    if (!grouped[e.type]) grouped[e.type] = []
-    grouped[e.type].push(e.content)
+    ;(grouped[e.type] ??= []).push(e.content)
   }
   return Object.entries(grouped)
-    .map(([type, items]) => `## ${type.toUpperCase()} (${items.length})\n${items.map((i, idx) => `${idx + 1}. ${i}`).join("\n")}`)
+    .map(([type, items]) => `## ${type.toUpperCase()} (${items.length})\n${items.map((item, i) => `${i + 1}. ${item}`).join("\n")}`)
     .join("\n\n")
 }
 
@@ -292,35 +301,20 @@ Use the expert's actual numbers, timelines, advice, and specifics.
 
 CALCULATOR RULES (if type is "calculator"): The "formula" field is a JavaScript expression evaluated at runtime. Input IDs become variables - e.g. inputs with ids "revenue" and "costs" allow formula "revenue - costs". The formula MUST reference every input ID so the result changes dynamically. Set interpretation ranges to match realistic output values. Test mentally: plug in the defaultValues and verify the formula produces a sensible number in range.
 
+QUIZ RULES (if type is "quiz"): Generate 5-10 questions that test real knowledge from the expert. Each question should have 3-4 options with exactly one correct answer (unless multipleCorrect is true). Every option needs an "explanation" field explaining why it's right or wrong. For "scenario" mode, include a "scenario" field describing the situation. Use the expert's actual examples and specifics - not generic trivia. Set passingScore to 70 for knowledge_check, omit for scenario mode.
+
 Output ONLY the JSON object, no explanation.`
 
   return generateJSON<Record<string, unknown>>(prompt, {
     system,
     temperature: 0.2,
     maxTokens: 4096,
-    model: HAIKU,
+    model: SONNET,
     cacheSystem: true,
   })
 }
 
 // ============ Step 3: Generate Operations Board ============
-
-const OPERATIONS_SCHEMA = `{
-  "id": "operations_board",
-  "type": "task_board",
-  "title": "Weekly Operations",
-  "tasks": [
-    {
-      "id": "unique_snake_case_id",
-      "text": "Short task description",
-      "description": "More detail about what to do and why",
-      "frequency": "weekly|monthly|as_needed",
-      "linkedComponentId": "component_id_from_setup_toolkit (optional)",
-      "linkedComponentTitle": "Component Title (optional)",
-      "category": "Category Name"
-    }
-  ]
-}`
 
 export async function generateOperationsBoard(
   plan: ToolPlan,
@@ -345,9 +339,6 @@ Your job is to distill the expert's knowledge into actionable recurring tasks th
 
 SETUP TOOLKIT COMPONENTS (link tasks back to these where relevant):
 ${componentList}
-
-SCHEMA:
-${OPERATIONS_SCHEMA}
 
 RULES:
 - Generate 8-15 tasks grouped by category

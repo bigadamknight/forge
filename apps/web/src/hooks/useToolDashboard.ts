@@ -1,13 +1,14 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { getToolConfig, generateTool, generateToolStream, planTool, getDocuments, type GenerateEvent, type ToolPlan, type ToolPlanComponent } from '../lib/api'
+import { getToolConfig, getForge, getPlanningNodes, generateTool, generateToolStream, planTool, getDocuments, getExtractions, suggestFollowUps, type GenerateEvent, type ToolPlan } from '../lib/api'
 
 export type ActivePanel =
   | { type: 'overview' }
   | { type: 'component'; index: number }
   | { type: 'documents' }
+  | { type: 'knowledge' }
   | { type: 'chat'; chatId: string }
-  | { type: 'interview' }
+  | { type: 'interview'; round?: number }
 
 export interface ChatInfo {
   id: string
@@ -39,11 +40,20 @@ function loadChatList(forgeId: string): ChatInfo[] {
   } catch { return [] }
 }
 
+function errorProgress(message: string): GenerationProgress {
+  return { step: 'error', current: 0, total: 0, components: [], errorMessage: message }
+}
+
+function planToComponents(components: Array<{ type: string; title?: string; focus?: string }>): GenerationProgress['components'] {
+  return components.map((c) => ({ type: c.type, title: c.title ?? c.focus ?? '', done: false }))
+}
+
 export function useToolDashboard(forgeId: string) {
   const [activePanel, setActivePanel] = useState<ActivePanel>({ type: 'overview' })
   const [completionMap, setCompletionMap] = useState<Record<string, boolean>>(() => loadCompletionMap(forgeId))
   const [chats, setChats] = useState<ChatInfo[]>(() => loadChatList(forgeId))
   const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null)
+  const [constellationNodes, setConstellationNodes] = useState<string[]>([])
   const abortRef = useRef<AbortController | null>(null)
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -57,6 +67,24 @@ export function useToolDashboard(forgeId: string) {
     queryFn: () => getDocuments(forgeId),
   })
 
+  const { data: extractions = [] } = useQuery({
+    queryKey: ['extractions', forgeId],
+    queryFn: () => getExtractions(forgeId),
+  })
+
+  const { data: forge } = useQuery({
+    queryKey: ['forge', forgeId],
+    queryFn: () => getForge(forgeId),
+  })
+
+  const interviewRounds = ((forge?.metadata as any)?.interviewRounds ?? [{ round: 1, topic: 'Initial interview', status: forge?.status === 'complete' ? 'completed' : 'interviewing' }]) as Array<{ round: number; topic: string; status: string; startedAt?: string; completedAt?: string }>
+
+  const { data: followUpSuggestions } = useQuery({
+    queryKey: ['follow-up-suggestions', forgeId],
+    queryFn: () => suggestFollowUps(forgeId),
+    enabled: forge?.status === 'complete',
+  })
+
   const generateMutation = useMutation({
     mutationFn: () => generateTool(forgeId),
     onSuccess: () => refetch(),
@@ -67,12 +95,22 @@ export function useToolDashboard(forgeId: string) {
 
   // Step 1: Plan the tool (shows review screen)
   const startPlanning = useCallback(async () => {
+    setConstellationNodes([])
     setGenerationProgress({
       step: 'planning',
       current: 0,
       total: 0,
       components: [],
     })
+
+    // Fire constellation nodes in parallel (non-blocking)
+    if (forge) {
+      getPlanningNodes({
+        expertName: forge.expertName,
+        domain: forge.domain,
+        targetAudience: forge.targetAudience || undefined,
+      }).then((result) => setConstellationNodes(result.nodes)).catch(() => {})
+    }
 
     try {
       const plan = await planTool(forgeId)
@@ -81,162 +119,71 @@ export function useToolDashboard(forgeId: string) {
         title: plan.title,
         current: 0,
         total: plan.components.length,
-        components: plan.components.map((c) => ({
-          type: c.type,
-          title: c.focus,
-          done: false,
-        })),
+        components: planToComponents(plan.components),
         plan,
       })
     } catch (err) {
-      setGenerationProgress({
-        step: 'error',
-        current: 0,
-        total: 0,
-        components: [],
-        errorMessage: err instanceof Error ? err.message : 'Planning failed',
-      })
+      setGenerationProgress(errorProgress(err instanceof Error ? err.message : 'Planning failed'))
     }
-  }, [forgeId])
+  }, [forgeId, forge])
+
+  const handleGenerateEvent = useCallback((event: GenerateEvent) => {
+    switch (event.type) {
+      case 'plan':
+        setGenerationProgress((prev) => prev ? {
+          ...prev,
+          step: 'generating',
+          title: event.title,
+          total: event.componentCount,
+          components: planToComponents(event.components),
+        } : prev)
+        break
+      case 'component':
+        setGenerationProgress((prev) => {
+          if (!prev) return prev
+          const components = prev.components.map((c, i) =>
+            i === event.index - 1 ? { ...c, done: true } : c
+          )
+          return { ...prev, current: event.index, components }
+        })
+        break
+      case 'complete':
+        setGenerationProgress(null)
+        refetch()
+        break
+      case 'error':
+        setGenerationProgress(errorProgress(event.message))
+        break
+    }
+  }, [refetch])
+
+  const startGeneration = useCallback((plan?: ToolPlan) => {
+    abortRef.current?.abort()
+
+    const initialProgress: GenerationProgress = plan
+      ? { step: 'generating', title: plan.title, current: 0, total: plan.components.length, components: planToComponents(plan.components) }
+      : { step: 'planning', current: 0, total: 0, components: [] }
+
+    setGenerationProgress(initialProgress)
+
+    abortRef.current = generateToolStream(
+      forgeId,
+      handleGenerateEvent,
+      () => {},
+      (err) => setGenerationProgress(errorProgress(err)),
+      plan
+    )
+  }, [forgeId, handleGenerateEvent])
 
   // Step 2: Confirm plan and generate (called after user reviews)
   const confirmPlan = useCallback((plan: ToolPlan) => {
-    abortRef.current?.abort()
-
-    setGenerationProgress({
-      step: 'generating',
-      title: plan.title,
-      current: 0,
-      total: plan.components.length,
-      components: plan.components.map((c) => ({
-        type: c.type,
-        title: c.focus,
-        done: false,
-      })),
-    })
-
-    const controller = generateToolStream(
-      forgeId,
-      (event: GenerateEvent) => {
-        if (event.type === 'plan') {
-          // Plan already confirmed, just update generating state
-          setGenerationProgress((prev) => prev ? {
-            ...prev,
-            step: 'generating',
-            title: event.title,
-            total: event.componentCount,
-            components: event.components.map((c) => ({
-              type: c.type,
-              title: c.title,
-              done: false,
-            })),
-          } : prev)
-        } else if (event.type === 'component') {
-          setGenerationProgress((prev) => {
-            if (!prev) return prev
-            const components = prev.components.map((c, i) =>
-              i === event.index - 1 ? { ...c, done: true } : c
-            )
-            return {
-              ...prev,
-              current: event.index,
-              components,
-            }
-          })
-        } else if (event.type === 'complete') {
-          setGenerationProgress(null)
-          refetch()
-        } else if (event.type === 'error') {
-          setGenerationProgress({
-            step: 'error',
-            current: 0,
-            total: 0,
-            components: [],
-            errorMessage: event.message,
-          })
-        }
-      },
-      () => {},
-      (err) => {
-        setGenerationProgress({
-          step: 'error',
-          current: 0,
-          total: 0,
-          components: [],
-          errorMessage: err,
-        })
-      },
-      plan
-    )
-
-    abortRef.current = controller
-  }, [forgeId, refetch])
+    startGeneration(plan)
+  }, [startGeneration])
 
   // Legacy: generate without review (skips plan review)
   const generateStreaming = useCallback(() => {
-    abortRef.current?.abort()
-
-    setGenerationProgress({
-      step: 'planning',
-      current: 0,
-      total: 0,
-      components: [],
-    })
-
-    const controller = generateToolStream(
-      forgeId,
-      (event: GenerateEvent) => {
-        if (event.type === 'plan') {
-          setGenerationProgress({
-            step: 'generating',
-            title: event.title,
-            current: 0,
-            total: event.componentCount,
-            components: event.components.map((c) => ({
-              type: c.type,
-              title: c.title,
-              done: false,
-            })),
-          })
-        } else if (event.type === 'component') {
-          setGenerationProgress((prev) => {
-            if (!prev) return prev
-            const components = prev.components.map((c, i) =>
-              i === event.index - 1 ? { ...c, done: true } : c
-            )
-            return {
-              ...prev,
-              current: event.index,
-              components,
-            }
-          })
-        } else if (event.type === 'complete') {
-          setGenerationProgress(null)
-          refetch()
-        } else if (event.type === 'error') {
-          setGenerationProgress({
-            step: 'error',
-            current: 0,
-            total: 0,
-            components: [],
-            errorMessage: event.message,
-          })
-        }
-      },
-      () => {},
-      (err) => {
-        setGenerationProgress({
-          step: 'error',
-          current: 0,
-          total: 0,
-          components: [],
-          errorMessage: err,
-        })
-      }
-    )
-
-    abortRef.current = controller
-  }, [forgeId, refetch])
+    startGeneration()
+  }, [startGeneration])
 
   const layout = data?.toolConfig?.layout ?? []
 
@@ -276,14 +223,8 @@ export function useToolDashboard(forgeId: string) {
     } catch { /* ignore */ }
   }, [completionMap, forgeId])
 
-  const handleCompletionChange = setCompletionMap
-
   const handleTabChange = (index: number) => {
-    if (index === -1) {
-      setActivePanel({ type: 'overview' })
-    } else {
-      setActivePanel({ type: 'component', index })
-    }
+    setActivePanel(index === -1 ? { type: 'overview' } : { type: 'component', index })
   }
 
   // Persist chat list
@@ -302,6 +243,15 @@ export function useToolDashboard(forgeId: string) {
     setActivePanel({ type: 'chat', chatId: id })
   }, [])
 
+  const deleteChat = useCallback((chatId: string) => {
+    setChats((prev) => prev.filter((c) => c.id !== chatId))
+    try { localStorage.removeItem(`chat-${forgeId}-${chatId}`) } catch {}
+    // Navigate away if deleting the active chat
+    if (activePanel.type === 'chat' && activePanel.chatId === chatId) {
+      setActivePanel({ type: 'overview' })
+    }
+  }, [forgeId, activePanel])
+
   return {
     data,
     isLoading,
@@ -318,10 +268,16 @@ export function useToolDashboard(forgeId: string) {
     setActivePanel,
     overallProgress,
     completionMap,
-    handleCompletionChange,
+    handleCompletionChange: setCompletionMap,
     handleTabChange,
     documents,
+    extractions,
+    forge,
+    constellationNodes,
     chats,
     createChat,
+    deleteChat,
+    interviewRounds,
+    followUpSuggestions,
   }
 }

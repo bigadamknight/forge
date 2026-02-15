@@ -1,6 +1,6 @@
 import { Hono } from "hono"
 import { db, documents, forges } from "@forge/db"
-import { eq, asc } from "drizzle-orm"
+import { eq, and, asc } from "drizzle-orm"
 
 const app = new Hono()
 
@@ -73,7 +73,7 @@ app.get("/:forgeId/documents", async (c) => {
 // ============ Update Document ============
 
 app.patch("/:forgeId/documents/:docId", async (c) => {
-  const { docId } = c.req.param()
+  const { forgeId, docId } = c.req.param()
   const { title, content } = await c.req.json()
 
   const updates: Record<string, string> = {}
@@ -86,7 +86,7 @@ app.patch("/:forgeId/documents/:docId", async (c) => {
 
   const [doc] = await db.update(documents)
     .set(updates)
-    .where(eq(documents.id, docId))
+    .where(and(eq(documents.id, docId), eq(documents.forgeId, forgeId)))
     .returning()
 
   if (!doc) return c.json({ error: "Document not found" }, 404)
@@ -99,8 +99,11 @@ app.patch("/:forgeId/documents/:docId", async (c) => {
 app.delete("/:forgeId/documents/:docId", async (c) => {
   const { forgeId, docId } = c.req.param()
 
-  await db.delete(documents)
-    .where(eq(documents.id, docId))
+  const result = await db.delete(documents)
+    .where(and(eq(documents.id, docId), eq(documents.forgeId, forgeId)))
+    .returning()
+
+  if (result.length === 0) return c.json({ error: "Document not found" }, 404)
 
   return c.json({ deleted: true })
 })

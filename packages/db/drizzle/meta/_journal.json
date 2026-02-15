@@ -29,6 +29,13 @@
       "when": 1771020800000,
       "tag": "0003_pgvector",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1771264800000,
+      "tag": "0004_follow_up_rounds",
+      "breakpoints": true
     }
   ]
 }

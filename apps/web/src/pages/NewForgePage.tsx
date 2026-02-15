@@ -1,7 +1,6 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
 import { ArrowLeft, Flame, Sparkles, Zap, Clock, BookOpen } from 'lucide-react'
-import { Link } from 'react-router-dom'
 import { usePlanningAnimation } from '../hooks/usePlanningAnimation'
 import InterviewPlanningAnimation from '../components/InterviewPlanningAnimation'
 import DevTools from '../components/DevTools'
@@ -15,6 +14,7 @@ const DEPTH_ICONS = {
 
 export default function NewForgePage() {
   const navigate = useNavigate()
+
   const [expertName, setExpertName] = useState('')
   const [domain, setDomain] = useState('')
   const [expertBio, setExpertBio] = useState('')
@@ -30,7 +30,7 @@ export default function NewForgePage() {
 
   return (
     <div className="max-w-2xl mx-auto p-8">
-      <Link to="/" className="flex items-center gap-2 text-slate-400 hover:text-white mb-8 transition-colors">
+      <Link to="/forges" className="flex items-center gap-2 text-slate-400 hover:text-white mb-8 transition-colors">
         <ArrowLeft className="w-4 h-4" />
         Back
       </Link>
