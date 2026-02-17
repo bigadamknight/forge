@@ -1,8 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
+import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Flame, Loader2, Sparkles, Wrench, Check, RefreshCw, Pencil, Save, X, ChevronRight, Circle, CheckCircle, Trash2, ArrowUp, ArrowDown, Share2, Copy } from 'lucide-react'
 import KnowledgeConstellation from '../components/KnowledgeConstellation'
-import { askExpert, type ToolPlan, type ToolPlanComponent } from '../lib/api'
+import { streamAdvice, updateToolConfig, type ToolPlan, type ToolPlanComponent, type AdviceSection } from '../lib/api'
 import { useToolDashboard } from '../hooks/useToolDashboard'
 import { useToolEditor } from '../hooks/useToolEditor'
 import { renderTabComponent, COMPONENT_TYPE_LABELS } from '../lib/renderComponent'
@@ -12,11 +13,23 @@ import DocumentsPanel from '../components/workspace/DocumentsPanel'
 import KnowledgePanel from '../components/workspace/KnowledgePanel'
 import InterviewSummaryPanel from '../components/workspace/InterviewSummaryPanel'
 
+function loadSavedAdvice(forgeId: string): Record<string, AdviceSection[]> {
+  try {
+    const raw = localStorage.getItem(`advice-${forgeId}`)
+    return raw ? JSON.parse(raw) : {}
+  } catch { return {} }
+}
+
+function saveAdvice(forgeId: string, answers: Record<string, AdviceSection[]>) {
+  localStorage.setItem(`advice-${forgeId}`, JSON.stringify(answers))
+}
+
 export default function ToolViewPage() {
   const { forgeId } = useParams<{ forgeId: string }>()
+  const queryClient = useQueryClient()
   const autoGenerateRef = useRef(false)
   const [userContext, setUserContext] = useState<Record<string, unknown>>({})
-  const [expertAnswers, setExpertAnswers] = useState<Record<string, string>>({})
+  const [expertAnswers, setExpertAnswers] = useState<Record<string, AdviceSection[]>>(() => loadSavedAdvice(forgeId!))
   const [loadingFlows, setLoadingFlows] = useState<Record<string, boolean>>({})
   const [showRegenModal, setShowRegenModal] = useState(false)
   const [regenConfirmText, setRegenConfirmText] = useState('')
@@ -77,32 +90,65 @@ export default function ToolViewPage() {
     componentTitle: string
   ) => {
     setLoadingFlows((prev) => ({ ...prev, [componentId]: true }))
-    try {
-      const result = await askExpert(
-        forgeId!,
-        flowData.question,
-        { ...userContext, flowAnswers: flowData.answers },
-        componentTitle
-      )
-      setExpertAnswers((prev) => ({ ...prev, [componentId]: result.answer }))
-    } catch (err) {
-      setExpertAnswers((prev) => ({
-        ...prev,
-        [componentId]: `Error: ${err instanceof Error ? err.message : 'Failed to get response'}`,
-      }))
-    } finally {
-      setLoadingFlows((prev) => ({ ...prev, [componentId]: false }))
-    }
+    // Clear previous advice and start streaming
+    setExpertAnswers((prev) => ({ ...prev, [componentId]: [] }))
+
+    streamAdvice(
+      forgeId!,
+      flowData.question,
+      { ...userContext, flowAnswers: flowData.answers },
+      componentTitle,
+      (event) => {
+        if (event.type === 'outline') {
+          // Create placeholder sections from outline
+          setExpertAnswers((prev) => ({
+            ...prev,
+            [componentId]: event.sections.map((s) => ({ title: s.title, description: s.description, content: '' })),
+          }))
+        } else if (event.type === 'section') {
+          // Fill in content for completed section
+          setExpertAnswers((prev) => {
+            const sections = [...(prev[componentId] || [])]
+            if (sections[event.index]) {
+              sections[event.index] = { ...sections[event.index], content: event.content }
+            }
+            return { ...prev, [componentId]: sections }
+          })
+        }
+      },
+      () => {
+        // Done - persist to localStorage
+        setExpertAnswers((prev) => {
+          saveAdvice(forgeId!, prev)
+          return prev
+        })
+        setLoadingFlows((prev) => ({ ...prev, [componentId]: false }))
+      },
+      (error) => {
+        setExpertAnswers((prev) => ({
+          ...prev,
+          [componentId]: [{ title: 'Error', description: '', content: error }],
+        }))
+        setLoadingFlows((prev) => ({ ...prev, [componentId]: false }))
+      }
+    )
   }
 
   const handleComponentComplete = (componentId: string, complete: boolean) => {
     handleCompletionChange({ ...completionMap, [componentId]: complete })
   }
 
-  const handleChatComponentUpdate = (componentId: string, config: Record<string, unknown>) => {
+  const handleChatComponentUpdate = useCallback((componentId: string, config: Record<string, unknown>) => {
     const idx = editableLayout.findIndex((c) => c.id === componentId)
-    if (idx !== -1) updateComponent(idx, config)
-  }
+    if (idx === -1) return
+    // Update local state immediately
+    updateComponent(idx, config)
+    // Persist to DB and refresh query so the sync effect doesn't revert
+    const updatedLayout = editableLayout.map((c, i) => i === idx ? config : c)
+    updateToolConfig(forgeId!, updatedLayout).then(() => {
+      queryClient.invalidateQueries({ queryKey: ['tool', forgeId] })
+    })
+  }, [editableLayout, forgeId, queryClient, updateComponent])
 
   const handleChatNavigate = (componentId: string) => {
     const idx = tabs.findIndex((t) => t.id === componentId)
@@ -238,14 +284,20 @@ export default function ToolViewPage() {
 
       {/* Regeneration progress overlay */}
       {generationProgress && (
-        <div className="bg-slate-900/95 border-b border-slate-700/50">
-          <div className="px-6 py-6">
+        <div className="bg-slate-900/95 border-b border-slate-700/50 relative overflow-hidden">
+          {/* Background constellation for planning only */}
+          {constellationNodes.length > 0 && generationProgress.step === 'planning' && (
+            <div className="absolute inset-0 opacity-10 pointer-events-none">
+              <KnowledgeConstellation nodes={constellationNodes} />
+            </div>
+          )}
+          <div className="px-6 py-6 relative z-10">
             {generationProgress.step === 'planning' && (
               constellationNodes.length > 0 ? (
-                <KnowledgeConstellation
-                  nodes={constellationNodes}
-                  subtitle="Planning your interactive guide..."
-                />
+                <div className="flex items-center gap-3 text-slate-400">
+                  <Loader2 className="w-5 h-5 animate-spin text-orange-400 shrink-0" />
+                  <span className="text-sm">Planning your interactive guide...</span>
+                </div>
               ) : (
                 <div className="flex items-center gap-3 text-slate-400">
                   <Loader2 className="w-5 h-5 animate-spin text-orange-400 shrink-0" />
@@ -629,44 +681,46 @@ function GenerationStateView({
 
         {step === 'generating' && (
           <>
-            <Sparkles className="w-12 h-12 mx-auto mb-4 text-orange-400" />
-            {generationProgress!.title && (
-              <h2 className="text-xl font-bold mb-1">{generationProgress!.title}</h2>
-            )}
-            <p className="text-slate-400 text-sm mb-6">
-              Building all components in parallel... {generationProgress!.current} of {generationProgress!.total} complete
-            </p>
+            <div className="relative z-10">
+              <Sparkles className="w-12 h-12 mx-auto mb-4 text-orange-400" />
+              {generationProgress!.title && (
+                <h2 className="text-xl font-bold mb-1">{generationProgress!.title}</h2>
+              )}
+              <p className="text-slate-400 text-sm mb-6">
+                Building all components in parallel... {generationProgress!.current} of {generationProgress!.total} complete
+              </p>
 
-            <div className="w-full h-2 bg-slate-700  overflow-hidden mb-6">
-              <div
-                className="h-full bg-orange-500  transition-all duration-700 ease-out"
-                style={{ width: `${progressPercent(generationProgress!.current, generationProgress!.total)}%` }}
-              />
-            </div>
-
-            <div className="text-left space-y-2">
-              {generationProgress!.components.map((comp, i) => (
+              <div className="w-full h-2 bg-slate-700  overflow-hidden mb-6">
                 <div
-                  key={i}
-                  className={`flex items-center gap-3 px-3 py-2  transition-colors ${
-                    comp.done ? 'bg-green-500/10' : 'bg-orange-500/10'
-                  }`}
-                >
-                  {comp.done ? (
-                    <div className="w-5 h-5  bg-green-500/20 flex items-center justify-center shrink-0">
-                      <Check className="w-3.5 h-3.5 text-green-400" />
-                    </div>
-                  ) : (
-                    <Loader2 className="w-5 h-5 text-orange-400 animate-spin shrink-0" />
-                  )}
-                  <span className={`text-sm flex-1 text-left ${comp.done ? 'text-green-300' : 'text-orange-300'}`}>
-                    {comp.title}
-                  </span>
-                  <span className={`text-xs text-right min-w-[100px] shrink-0 ${comp.done ? 'text-green-500/60' : 'text-slate-600'}`}>
-                    {comp.type.replace(/_/g, ' ')}
-                  </span>
-                </div>
-              ))}
+                  className="h-full bg-orange-500  transition-all duration-700 ease-out"
+                  style={{ width: `${progressPercent(generationProgress!.current, generationProgress!.total)}%` }}
+                />
+              </div>
+
+              <div className="text-left space-y-2">
+                {generationProgress!.components.map((comp, i) => (
+                  <div
+                    key={i}
+                    className={`flex items-center gap-3 px-3 py-2  transition-colors ${
+                      comp.done ? 'bg-green-500/10' : 'bg-orange-500/10'
+                    }`}
+                  >
+                    {comp.done ? (
+                      <div className="w-5 h-5  bg-green-500/20 flex items-center justify-center shrink-0">
+                        <Check className="w-3.5 h-3.5 text-green-400" />
+                      </div>
+                    ) : (
+                      <Loader2 className="w-5 h-5 text-orange-400 animate-spin shrink-0" />
+                    )}
+                    <span className={`text-sm flex-1 text-left ${comp.done ? 'text-green-300' : 'text-orange-300'}`}>
+                      {comp.title}
+                    </span>
+                    <span className={`text-xs text-right min-w-[100px] shrink-0 ${comp.done ? 'text-green-500/60' : 'text-slate-600'}`}>
+                      {comp.type.replace(/_/g, ' ')}
+                    </span>
+                  </div>
+                ))}
+              </div>
             </div>
           </>
         )}

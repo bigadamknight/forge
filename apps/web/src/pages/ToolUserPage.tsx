@@ -1,16 +1,27 @@
 import { useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { Flame, Loader2, ChevronRight, Circle, CheckCircle } from 'lucide-react'
-import { askExpert } from '../lib/api'
+import { streamAdvice, type AdviceSection } from '../lib/api'
 import { useToolUser } from '../hooks/useToolUser'
 import { renderTabComponent } from '../lib/renderComponent'
 import ChatSidebar from '../components/toolkit/ChatSidebar'
 import WorkspaceSidebar from '../components/workspace/WorkspaceSidebar'
 
+function loadSavedAdvice(forgeId: string): Record<string, AdviceSection[]> {
+  try {
+    const raw = localStorage.getItem(`advice-${forgeId}`)
+    return raw ? JSON.parse(raw) : {}
+  } catch { return {} }
+}
+
+function saveAdvice(forgeId: string, answers: Record<string, AdviceSection[]>) {
+  localStorage.setItem(`advice-${forgeId}`, JSON.stringify(answers))
+}
+
 export default function ToolUserPage() {
   const { forgeId } = useParams<{ forgeId: string }>()
   const [userContext, setUserContext] = useState<Record<string, unknown>>({})
-  const [expertAnswers, setExpertAnswers] = useState<Record<string, string>>({})
+  const [expertAnswers, setExpertAnswers] = useState<Record<string, AdviceSection[]>>(() => loadSavedAdvice(forgeId!))
   const [loadingFlows, setLoadingFlows] = useState<Record<string, boolean>>({})
 
   const {
@@ -37,22 +48,44 @@ export default function ToolUserPage() {
     componentTitle: string
   ) => {
     setLoadingFlows((prev) => ({ ...prev, [componentId]: true }))
-    try {
-      const result = await askExpert(
-        forgeId!,
-        flowData.question,
-        { ...userContext, flowAnswers: flowData.answers },
-        componentTitle
-      )
-      setExpertAnswers((prev) => ({ ...prev, [componentId]: result.answer }))
-    } catch (err) {
-      setExpertAnswers((prev) => ({
-        ...prev,
-        [componentId]: `Error: ${err instanceof Error ? err.message : 'Failed to get response'}`,
-      }))
-    } finally {
-      setLoadingFlows((prev) => ({ ...prev, [componentId]: false }))
-    }
+    setExpertAnswers((prev) => ({ ...prev, [componentId]: [] }))
+
+    streamAdvice(
+      forgeId!,
+      flowData.question,
+      { ...userContext, flowAnswers: flowData.answers },
+      componentTitle,
+      (event) => {
+        if (event.type === 'outline') {
+          setExpertAnswers((prev) => ({
+            ...prev,
+            [componentId]: event.sections.map((s) => ({ title: s.title, description: s.description, content: '' })),
+          }))
+        } else if (event.type === 'section') {
+          setExpertAnswers((prev) => {
+            const sections = [...(prev[componentId] || [])]
+            if (sections[event.index]) {
+              sections[event.index] = { ...sections[event.index], content: event.content }
+            }
+            return { ...prev, [componentId]: sections }
+          })
+        }
+      },
+      () => {
+        setExpertAnswers((prev) => {
+          saveAdvice(forgeId!, prev)
+          return prev
+        })
+        setLoadingFlows((prev) => ({ ...prev, [componentId]: false }))
+      },
+      (error) => {
+        setExpertAnswers((prev) => ({
+          ...prev,
+          [componentId]: [{ title: 'Error', description: '', content: error }],
+        }))
+        setLoadingFlows((prev) => ({ ...prev, [componentId]: false }))
+      }
+    )
   }
 
   const handleComponentComplete = (componentId: string, complete: boolean) => {

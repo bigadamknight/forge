@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming"
 import { db, forges, extractions, documents } from "@forge/db"
 import { eq, asc, and } from "drizzle-orm"
 import { generateToolConfig, generateToolPlan, generateComponent, buildKnowledgeSummary, buildDocumentSection, deriveComponentSpec, type ToolPlan } from "../services/tool-generator"
-import { generateText, generateJSON } from "../lib/llm"
+import { generateText, generateJSON, HAIKU } from "../lib/llm"
 import { searchHybrid, hasEmbeddings } from "../lib/embeddings"
 
 const app = new Hono()
@@ -313,14 +313,130 @@ Instructions:
 - Be specific, practical, and actionable
 - Reference the expert's actual knowledge and numbers when relevant
 - If the expert's knowledge doesn't cover this question, say so honestly
-- Keep answers focused and concise`
+- Use markdown formatting for readability (headers, bullet points, bold for emphasis)
+- Give thorough, detailed answers — the user wants real depth, not a summary`
 
   const response = await generateText(
     [{ role: "user", content: question }],
-    { system, temperature: 0.4, maxTokens: 1024, effort: "medium" }
+    { system, temperature: 0.4, maxTokens: 4096, effort: "medium" }
   )
 
   return c.json({ answer: response })
+})
+
+// ============ Structured Advice (SSE Stream) ============
+
+app.post("/:forgeId/tool/advice", async (c) => {
+  const { forgeId } = c.req.param()
+  const { question, userContext, componentContext } = await c.req.json()
+
+  if (!question) return c.json({ error: "question is required" }, 400)
+
+  const forge = await getForge(forgeId)
+  if (!forge) return c.json({ error: "Forge not found" }, 404)
+
+  const expertKnowledge = await loadExpertKnowledge(forgeId, question, 15)
+
+  const allDocuments = await db.select().from(documents)
+    .where(eq(documents.forgeId, forgeId))
+    .orderBy(asc(documents.createdAt))
+  const documentContext = allDocuments.length > 0
+    ? `\n\nSUPPORTING DOCUMENTS:\n${allDocuments.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 5000)}`).join("\n\n")}`
+    : ""
+
+  const metadata = (forge.metadata as any) || {}
+  const voiceTranscript = Array.isArray(metadata.voiceTranscript)
+    ? metadata.voiceTranscript.filter((m: any) => m.role === "user").slice(-20).map((m: any) => m.content).join("\n")
+    : ""
+  const transcriptContext = voiceTranscript
+    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript}`
+    : ""
+
+  const contextPreamble = `You are an AI assistant that channels the expertise of ${forge.expertName} in ${forge.domain}.
+
+LAYER 1 - DOMAIN CONTEXT:
+${forge.domain}. ${forge.targetAudience ? `This tool is designed for: ${forge.targetAudience}` : ""}
+
+LAYER 2 - EXPERT KNOWLEDGE:
+The following knowledge was extracted directly from ${forge.expertName}:
+${expertKnowledge}${transcriptContext}${documentContext}
+
+LAYER 3 - TOOL CONTEXT:
+${componentContext ? `The user is currently looking at: ${componentContext}` : "They are using an interactive guide built from this expert's knowledge."}
+
+LAYER 4 - USER SITUATION:
+${userContext ? `About the user: ${JSON.stringify(userContext)}` : "No specific context provided."}`
+
+  return streamSSE(c, async (stream) => {
+    try {
+      // Step 1: Structure call (Haiku, fast) - get advice outline
+      console.log(`[tool/advice] Step 1: outline for ${forgeId}`)
+      const outline = await generateJSON<{
+        sections: Array<{ title: string; description: string }>
+      }>(
+        `${contextPreamble}
+
+QUESTION: ${question}
+
+You are planning a structured, personalized advice response for this user. Based on their question and situation, create an outline of 3-5 advice sections.
+
+Each section should cover a distinct aspect of the advice. Return JSON:
+{ "sections": [{ "title": "Section title", "description": "Brief description of what this section covers" }] }`,
+        {
+          model: HAIKU,
+          temperature: 0.2,
+          maxTokens: 1024,
+        }
+      )
+
+      await stream.writeSSE({
+        data: JSON.stringify({ type: "outline", sections: outline.sections }),
+      })
+
+      // Step 2: Content calls (parallel, default model) - fill in each section
+      console.log(`[tool/advice] Step 2: generating ${outline.sections.length} sections in parallel`)
+      await Promise.all(
+        outline.sections.map(async (section, index) => {
+          const content = await generateText(
+            [{ role: "user", content: `${contextPreamble}
+
+QUESTION: ${question}
+
+You are writing one section of personalized advice. Write ONLY the content for this section:
+
+SECTION: ${section.title}
+DESCRIPTION: ${section.description}
+
+Instructions:
+- Answer as if you are ${forge.expertName} sharing their expertise
+- Be specific, practical, and actionable
+- Reference the expert's actual knowledge and numbers when relevant
+- If the expert's knowledge doesn't cover this, say so honestly
+- Use markdown formatting (bullet points, bold for emphasis)
+- Write 2-4 paragraphs of detailed, actionable advice for this section only
+- Do NOT include the section title - just the content` }],
+            { temperature: 0.4, maxTokens: 2048 }
+          )
+
+          await stream.writeSSE({
+            data: JSON.stringify({ type: "section", index, content }),
+          })
+          console.log(`[tool/advice] Section ${index + 1}/${outline.sections.length} complete: ${section.title}`)
+        })
+      )
+
+      await stream.writeSSE({
+        data: JSON.stringify({ type: "complete" }),
+      })
+      console.log(`[tool/advice] Complete for ${forgeId}`)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Unknown error"
+      console.error("[tool/advice] Error:", message)
+      await stream.writeSSE({
+        data: JSON.stringify({ type: "error", message }),
+      })
+    }
+  })
 })
 
 // ============ Tool Voice Session (Shared Agent) ============
@@ -453,6 +569,22 @@ app.post("/:forgeId/tool/refine", async (c) => {
 
   const expertKnowledge = await loadExpertKnowledge(forgeId, message, 20)
 
+  // Load supporting documents and voice transcript for richer context
+  const allDocuments = await db.select().from(documents)
+    .where(eq(documents.forgeId, forgeId))
+    .orderBy(asc(documents.createdAt))
+  const documentContext = allDocuments.length > 0
+    ? `\n\nSUPPORTING DOCUMENTS:\n${allDocuments.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 5000)}`).join("\n\n")}`
+    : ""
+
+  const metadata = (forge.metadata as any) || {}
+  const voiceTranscript = Array.isArray(metadata.voiceTranscript)
+    ? metadata.voiceTranscript.filter((m: any) => m.role === "user").slice(-20).map((m: any) => m.content).join("\n")
+    : ""
+  const transcriptContext = voiceTranscript
+    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript}`
+    : ""
+
   // Find the active component config
   const activeComponent = layout?.find((c: any) => c.id === activeComponentId)
 
@@ -468,7 +600,7 @@ You also manage an interactive tool built from this expertise. When appropriate,
 2. Navigate the UI to a relevant component
 
 EXPERT KNOWLEDGE:
-${expertKnowledge}
+${expertKnowledge}${transcriptContext}${documentContext}
 
 ALL COMPONENTS:
 ${componentSummary}

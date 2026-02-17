@@ -579,11 +579,6 @@ app.post("/:forgeId/follow-up", async (c) => {
 
   const existingComponents = ((forge.toolConfig as any)?.layout || []).map((c: any) => c.title as string)
 
-  await db.update(forges).set({
-    status: "interviewing",
-    updatedAt: new Date(),
-  }).where(eq(forges.id, forgeId))
-
   return streamSSE(c, async (stream) => {
     try {
       // Stage 1: Analysing
@@ -657,7 +652,6 @@ app.post("/:forgeId/follow-up", async (c) => {
       await db.update(forges).set({
         interviewConfig: config,
         metadata: { ...metadata, interviewRounds },
-        status: "interviewing",
         updatedAt: new Date(),
       }).where(eq(forges.id, forgeId))
 

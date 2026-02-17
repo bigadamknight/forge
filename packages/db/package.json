@@ -10,6 +10,7 @@
     "studio": "drizzle-kit studio",
     "seed": "bun run src/seed-interviews.ts",
     "seed:clean": "bun run src/seed-interviews.ts --clean",
+    "seed:demo": "bun run src/seed-demo.ts --clean",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

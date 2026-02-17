@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useConversation } from '@elevenlabs/react'
 import { Mic, PhoneOff, Volume2, Loader2, RefreshCw, ArrowRight } from 'lucide-react'
-import { extractVoiceMessage, saveVoiceMessage, getVoiceProgress } from '../../lib/api'
+import { extractVoiceMessage, saveVoiceMessage } from '../../lib/api'
 
 interface VoicePanelProps {
   agentId: string
@@ -64,47 +64,39 @@ export default function VoicePanel({ agentId, sessionConfig, forgeId, expertName
   const endingRef = useRef(false)
   const wasConnectedRef = useRef(false)
   const messageCountRef = useRef(0)
-  const conversationRef = useRef<ReturnType<typeof useConversation> | null>(null)
-  const pendingProgressUpdate = useRef(false)
-
-  const sendProgressUpdate = useCallback(() => {
-    getVoiceProgress(forgeId)
-      .then(({ progress }) => {
-        if (progress && conversationRef.current) {
-          try {
-            conversationRef.current.sendContextualUpdate(`Interview progress has been updated:\n${progress}\n\nFollow the instructions in the progress update.`)
-          } catch (err) {
-            console.error('[VoicePanel] sendContextualUpdate failed:', err)
-          }
-        }
-      })
-      .catch((err: unknown) => console.error('[VoicePanel] Failed to fetch progress:', err))
-  }, [forgeId])
-
   const conversation = useConversation({
     onMessage: useCallback(({ message, role }: { message: string; role: string }) => {
       const msg = { role: role === 'agent' ? 'assistant' : 'user', content: message }
       messageCountRef.current++
-      setMessages((prev) => [...prev, msg])
+      setMessages((prev) => {
+        // Skip exact duplicates in recent messages
+        const recent = prev.slice(-4)
+        if (recent.some((m) => m.role === msg.role && m.content === msg.content)) return prev
+
+        // Skip if agent is repeating itself: 2+ consecutive assistant messages
+        // without a user message in between means the agent is looping
+        if (msg.role === 'assistant' && prev.length >= 2) {
+          const lastTwo = prev.slice(-2)
+          if (lastTwo.every((m) => m.role === 'assistant')) return prev
+        }
+
+        return [...prev, msg]
+      })
       onMessage(msg)
 
       saveVoiceMessage(forgeId, msg.role, msg.content)
         .catch((err) => console.error('Failed to save voice message:', err))
 
-      // When the user speaks, send any queued progress update
-      if (msg.role === 'user' && pendingProgressUpdate.current && conversationRef.current) {
-        pendingProgressUpdate.current = false
-        sendProgressUpdate()
-      }
-
       // Extract knowledge from expert messages in real-time
+      // Note: we no longer send contextual progress updates mid-conversation
+      // because sendContextualUpdate triggers the agent to speak again, causing
+      // double replies. The agent has the full interview guide in its prompt
+      // and gets fresh progress on session start/reconnect.
       if (msg.role === 'user' && msg.content.length > 20) {
         extractVoiceMessage(forgeId, msg.content)
           .then((result) => {
             if (result.extractions.length > 0) {
               onExtraction(result.extractions)
-              // Send progress update immediately - important for completion detection
-              sendProgressUpdate()
             }
           })
           .catch((err) => console.error('Voice extraction failed:', err))
@@ -117,8 +109,6 @@ export default function VoicePanel({ agentId, sessionConfig, forgeId, expertName
       console.error('ElevenLabs error:', error)
     }, []),
   })
-
-  conversationRef.current = conversation
 
   // Detect agent-initiated disconnect - show reconnect option instead of auto-completing
   useEffect(() => {

@@ -148,6 +148,22 @@ app.post("/:forgeId/voice-message", async (c) => {
 
   const metadata = (forge.metadata as any) || {}
   const transcript = Array.isArray(metadata.voiceTranscript) ? metadata.voiceTranscript : []
+
+  // Deduplicate: skip exact duplicates in recent messages
+  const recent = transcript.slice(-4)
+  if (recent.some((m: any) => m.role === role && m.content === content)) {
+    return c.json({ saved: false, count: transcript.length, reason: "duplicate" })
+  }
+
+  // Skip if agent is sending consecutive messages without user response
+  // This prevents the agent looping when contextual updates trigger repeated speech
+  if (role === 'assistant' && transcript.length >= 2) {
+    const lastTwo = transcript.slice(-2)
+    if (lastTwo.every((m: any) => m.role === 'assistant')) {
+      return c.json({ saved: false, count: transcript.length, reason: "consecutive_assistant" })
+    }
+  }
+
   transcript.push({ role, content, timestamp: new Date().toISOString() })
 
   await db.update(forges).set({

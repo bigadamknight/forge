@@ -58,19 +58,24 @@ export default function Quiz({ config, onComplete, editMode, onConfigChange }: Q
 
   const selectOption = (questionId: string, optionId: string, multipleCorrect?: boolean) => {
     if (editMode) return
-    setAnswers((prev) => {
-      const current = prev[questionId] || []
-      if (multipleCorrect) {
+    if (multipleCorrect) {
+      setAnswers((prev) => {
+        const current = prev[questionId] || []
         const next = current.includes(optionId)
           ? current.filter((id) => id !== optionId)
           : [...current, optionId]
         return { ...prev, [questionId]: next }
+      })
+    } else {
+      setAnswers((prev) => ({ ...prev, [questionId]: [optionId] }))
+      // Auto-reveal for single-select when immediate feedback is on
+      if (config.showImmediateFeedback) {
+        setRevealed((prev) => new Set([...prev, questionId]))
       }
-      return { ...prev, [questionId]: [optionId] }
-    })
+    }
   }
 
-  const revealAnswer = (questionId: string) => {
+  const confirmMultiSelect = (questionId: string) => {
     setRevealed((prev) => new Set([...prev, questionId]))
   }
 
@@ -356,16 +361,16 @@ export default function Quiz({ config, onComplete, editMode, onConfigChange }: Q
         </button>
 
         <div className="flex items-center gap-2">
-          {config.showImmediateFeedback && isAnswered && !isRevealed && (
+          {config.showImmediateFeedback && question.multipleCorrect && isAnswered && !isRevealed && (
             <button
-              onClick={() => revealAnswer(question.id)}
+              onClick={() => confirmMultiSelect(question.id)}
               className="px-4 py-2 text-sm bg-orange-600 hover:bg-orange-700 text-white transition-colors"
             >
-              Check Answer
+              Confirm
             </button>
           )}
 
-          {currentIndex < config.questions.length - 1 && (
+          {currentIndex < config.questions.length - 1 && (isRevealed || !config.showImmediateFeedback) && (
             <button
               onClick={() => setCurrentIndex((i) => i + 1)}
               className="flex items-center gap-1.5 px-4 py-2 text-sm text-white bg-slate-700 hover:bg-slate-600 transition-colors"
@@ -374,7 +379,7 @@ export default function Quiz({ config, onComplete, editMode, onConfigChange }: Q
               <ChevronRight className="w-4 h-4" />
             </button>
           )}
-          {currentIndex === config.questions.length - 1 && allAnswered && config.showScoreAtEnd && (
+          {currentIndex === config.questions.length - 1 && allAnswered && config.showScoreAtEnd && (isRevealed || !config.showImmediateFeedback) && (
             <button
               onClick={() => setShowResults(true)}
               className="px-4 py-2 text-sm bg-orange-600 hover:bg-orange-700 text-white transition-colors"

@@ -33,7 +33,7 @@ export default function InterviewSummaryPanel({ forgeId, forge, interviewRounds 
   const { data: suggestionsData, isLoading: suggestionsLoading } = useQuery({
     queryKey: ['follow-up-suggestions', forgeId],
     queryFn: () => suggestFollowUps(forgeId),
-    enabled: forge?.status === 'complete',
+    enabled: !!forge,
   })
 
   if (isLoading) {
@@ -115,13 +115,22 @@ export default function InterviewSummaryPanel({ forgeId, forge, interviewRounds 
                   Update Tool with New Knowledge
                 </button>
               )}
+              {r.status === 'interviewing' && (
+                <button
+                  onClick={() => navigate(`/forge/${forgeId}/interview`)}
+                  className="mt-3 flex items-center gap-1.5 text-xs text-orange-400 hover:text-orange-300 transition-colors"
+                >
+                  <ArrowRight className="w-3 h-3" />
+                  Resume Interview
+                </button>
+              )}
             </div>
           )
         })}
       </div>
 
       {/* Follow-up suggestions */}
-      {forge?.status === 'complete' && (
+      {forge && (
         <div>
           <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider mb-3">
             Suggested Follow-ups

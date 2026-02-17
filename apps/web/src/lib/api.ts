@@ -394,6 +394,42 @@ export function askExpert(
   })
 }
 
+// ============ Structured Advice (SSE Stream) ============
+
+export interface AdviceSection {
+  title: string
+  description: string
+  content: string
+}
+
+export type AdviceEvent =
+  | { type: 'outline'; sections: Array<{ title: string; description: string }> }
+  | { type: 'section'; index: number; content: string }
+  | { type: 'complete' }
+  | { type: 'error'; message: string }
+
+export function streamAdvice(
+  forgeId: string,
+  question: string,
+  userContext: Record<string, unknown> | undefined,
+  componentContext: string | undefined,
+  onEvent: (event: AdviceEvent) => void,
+  onDone: () => void,
+  onError: (error: string) => void
+): AbortController {
+  return streamSSE(
+    `${API_BASE}/forges/${forgeId}/tool/advice`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question, userContext, componentContext }),
+    },
+    onEvent,
+    onDone,
+    onError
+  )
+}
+
 export function getToolVoiceSession(forgeId: string, mode: 'widget' | 'chat' = 'widget'): Promise<{
   agentId: string
   prompt: string

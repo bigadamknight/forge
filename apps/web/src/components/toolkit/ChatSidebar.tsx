@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageCircle, X, Send, Mic, Loader2, Volume2, Sparkles } from 'lucide-react'
 import { useConversation } from '@elevenlabs/react'
 import ReactMarkdown from 'react-markdown'
-import { refineTool, askExpert, getToolVoiceSession, type RefineResult } from '../../lib/api'
+import { refineTool, getToolVoiceSession, type RefineResult } from '../../lib/api'
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -250,6 +250,19 @@ export default function ChatSidebar({
           `${q.id}="${q.text}" [${(q.options as any[])?.map((o: any) => `${o.id}:"${o.text}"${o.correct ? '(correct)' : ''}`).join(', ')}]`
         ).join('; ')}`
         break
+      case 'info_card':
+        detail = `Variant: ${activeConfig.variant}. Content: ${activeConfig.content}${activeConfig.details ? ` Details: ${activeConfig.details}` : ''}`
+        break
+      case 'custom':
+        detail = `Sections: ${(activeConfig.sections as any[])?.map((s: any) =>
+          `"${s.heading}" (${s.variant})${s.content ? `: ${s.content.slice(0, 100)}` : ''}${s.items ? `: ${s.items.slice(0, 5).join(', ')}` : ''}`
+        ).join('; ')}`
+        break
+      case 'task_board':
+        detail = `Tasks: ${(activeConfig.tasks as any[])?.map((t: any) =>
+          `"${t.text}" (${t.frequency})${t.category ? ` [${t.category}]` : ''}`
+        ).join(', ')}`
+        break
     }
 
     conversation.sendContextualUpdate(
@@ -268,32 +281,18 @@ export default function ChatSidebar({
     setIsLoading(true)
 
     try {
-      if (isPanel) {
-        // Panel chat: knowledge-first, no component manipulation
-        const sections = layoutRef.current.map((c: any) => `${c.title} (${c.type})`).join(', ')
-        const ctx = sections
-          ? `The user is chatting generally. Available guide sections they can explore: ${sections}`
-          : undefined
-        const result = await askExpert(forgeId, userMsg, userContext, ctx)
+      const result = await handleRefine(userMsg)
+      if (result) {
         setMessages((prev) => [...prev, {
           role: 'assistant',
-          content: result.answer,
+          content: result.response,
+          action: result.action,
         }])
       } else {
-        // Floating widget: interactive, can update components
-        const result = await handleRefine(userMsg)
-        if (result) {
-          setMessages((prev) => [...prev, {
-            role: 'assistant',
-            content: result.response,
-            action: result.action,
-          }])
-        } else {
-          setMessages((prev) => [...prev, {
-            role: 'assistant',
-            content: 'Sorry, I couldn\'t process that request.',
-          }])
-        }
+        setMessages((prev) => [...prev, {
+          role: 'assistant',
+          content: 'Sorry, I couldn\'t process that request.',
+        }])
       }
     } finally {
       setIsLoading(false)
