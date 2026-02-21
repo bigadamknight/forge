@@ -194,7 +194,7 @@ app.post("/:forgeId/voice-extract", async (c) => {
     .limit(1)
 
   const sectionForContext = activeSection[0] || null
-  const sectionTitle = sectionForContext?.title || forge.domain
+  const sectionTitle = sectionForContext?.title || forge.domain || "General"
 
   const existing = await db.select().from(extractions)
     .where(eq(extractions.forgeId, forgeId))
@@ -317,5 +317,96 @@ async function advanceVoiceProgress(forgeId: string, currentSectionId: string) {
       .where(eq(interviewQuestions.id, firstQuestion[0].id))
   }
 }
+
+// ============ Intro Voice Session ============
+
+import { extractIntroFields } from "../services/intro-extractor"
+
+const INTRO_VOICE_PROMPT = `You are a warm, friendly host welcoming someone to Forge — a tool that captures expert knowledge through conversation. Your goal is to learn three things naturally:
+
+1. Their name
+2. Their area of expertise (what they know deeply)
+3. Who they want to help with this knowledge (target audience)
+
+Guidelines:
+- Be warm and enthusiastic but not over-the-top
+- Ask one thing at a time, don't front-load all three questions
+- Acknowledge what they share before moving on
+- If they give you multiple pieces in one message, acknowledge all of them
+- Once you have all three, say something like "Great, I've got what I need to plan your interview. Feel free to share any additional context, or go ahead and plan your interview when you're ready."
+- Keep responses SHORT. 1-2 sentences. This is spoken conversation.
+- One question at a time. Never ask multiple questions.`
+
+app.post("/:forgeId/intro/voice-session", async (c) => {
+  const { forgeId } = c.req.param()
+
+  if (!ELEVENLABS_AGENT_ID) {
+    return c.json({ error: "ELEVENLABS_AGENT_ID not configured" }, 500)
+  }
+
+  const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
+  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  if (forge.status !== "draft") return c.json({ error: "Forge is not in intro phase" }, 400)
+
+  return c.json({
+    agentId: ELEVENLABS_AGENT_ID,
+    prompt: INTRO_VOICE_PROMPT,
+    firstMessage: "Hey there! Welcome to Forge — I'm excited to help you capture your expertise. What's your name?",
+    progress: "Intro phase - gathering expert info",
+  })
+})
+
+app.post("/:forgeId/intro/voice-message", async (c) => {
+  const { forgeId } = c.req.param()
+  const { role, content } = await c.req.json()
+
+  if (!role || !content) {
+    return c.json({ error: "role and content required" }, 400)
+  }
+
+  const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
+  if (!forge) return c.json({ error: "Forge not found" }, 404)
+
+  const metadata = (forge.metadata as any) || {}
+  const introMessages: Array<{ role: string; content: string }> = [...(metadata.introMessages || [])]
+
+  // Deduplicate
+  const recent = introMessages.slice(-4)
+  if (recent.some((m) => m.role === role && m.content === content)) {
+    return c.json({ saved: false, count: introMessages.length, reason: "duplicate" })
+  }
+
+  const mappedRole = role === 'agent' ? 'assistant' : role
+  introMessages.push({ role: mappedRole, content })
+
+  // Run intro field extraction on user messages
+  let introExtracted = metadata.introExtracted || {}
+  if (mappedRole === 'user') {
+    try {
+      const extracted = await extractIntroFields(introMessages as Array<{ role: "user" | "assistant"; content: string }>)
+      introExtracted = {
+        expertName: extracted.expertName || introExtracted.expertName || null,
+        domain: extracted.domain || introExtracted.domain || null,
+        targetAudience: extracted.targetAudience || introExtracted.targetAudience || null,
+      }
+    } catch (err) {
+      console.error("Intro voice extraction failed:", err)
+    }
+  }
+
+  await db.update(forges).set({
+    metadata: { ...metadata, introMessages, introExtracted },
+    updatedAt: new Date(),
+  }).where(eq(forges.id, forgeId))
+
+  return c.json({ saved: true, count: introMessages.length })
+})
+
+app.post("/:forgeId/intro/voice-extract", async (c) => {
+  const { forgeId } = c.req.param()
+  // Intro voice extract doesn't save knowledge extractions — it's just gathering basic info.
+  // Return empty extractions to satisfy VoicePanel's interface.
+  return c.json({ extractions: [] })
+})
 
 export default app

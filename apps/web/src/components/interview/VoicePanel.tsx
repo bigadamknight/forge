@@ -23,6 +23,8 @@ interface VoicePanelProps {
   onExtraction: (items: Array<{ id: string; type: string; content: string; confidence: number; tags: string[] }>) => void
   onEnd: () => void
   allQuestionsAnswered?: boolean
+  saveMessage?: (forgeId: string, role: string, content: string) => Promise<any>
+  extractMessage?: (forgeId: string, content: string) => Promise<{ extractions: Array<{ id: string; type: string; content: string; confidence: number; tags: string[] }> }>
 }
 
 function statusDotColor(status: string): string {
@@ -55,7 +57,9 @@ function buildSessionConfig(agentId: string, prompt: string, firstMessage: strin
   } as any
 }
 
-export default function VoicePanel({ agentId, sessionConfig, forgeId, expertName, resumeContext, previousMessages, onMessage, onExtraction, onEnd, allQuestionsAnswered }: VoicePanelProps) {
+export default function VoicePanel({ agentId, sessionConfig, forgeId, expertName, resumeContext, previousMessages, onMessage, onExtraction, onEnd, allQuestionsAnswered, saveMessage, extractMessage }: VoicePanelProps) {
+  const saveFn = saveMessage || saveVoiceMessage
+  const extractFn = extractMessage || extractVoiceMessage
   const [messages, setMessages] = useState<Array<{ role: string; content: string }>>(previousMessages || [])
   const [isEnding, setIsEnding] = useState(false)
   const [isDisconnected, setIsDisconnected] = useState(false)
@@ -84,7 +88,7 @@ export default function VoicePanel({ agentId, sessionConfig, forgeId, expertName
       })
       onMessage(msg)
 
-      saveVoiceMessage(forgeId, msg.role, msg.content)
+      saveFn(forgeId, msg.role, msg.content)
         .catch((err) => console.error('Failed to save voice message:', err))
 
       // Extract knowledge from expert messages in real-time
@@ -93,7 +97,7 @@ export default function VoicePanel({ agentId, sessionConfig, forgeId, expertName
       // double replies. The agent has the full interview guide in its prompt
       // and gets fresh progress on session start/reconnect.
       if (msg.role === 'user' && msg.content.length > 20) {
-        extractVoiceMessage(forgeId, msg.content)
+        extractFn(forgeId, msg.content)
           .then((result) => {
             if (result.extractions.length > 0) {
               onExtraction(result.extractions)

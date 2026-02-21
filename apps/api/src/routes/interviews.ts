@@ -8,6 +8,8 @@ import { generateJSON, HAIKU } from "../lib/llm"
 import type { InterviewDepth } from "@forge/shared"
 import { embedExtractionAsync } from "../lib/embeddings"
 import { streamConductorResponse, generateOpeningMessage } from "../services/conductor"
+import { streamIntroConductorResponse, generateIntroOpening } from "../services/intro-conductor"
+import { extractIntroFields } from "../services/intro-extractor"
 import { validateResponse, CONFIDENCE_THRESHOLD } from "../services/validator"
 import { extractKnowledge } from "../services/extractor"
 
@@ -87,8 +89,8 @@ app.post("/:forgeId/plan-interview", async (c) => {
   await db.update(forges).set({ status: "planning", updatedAt: new Date() }).where(eq(forges.id, forgeId))
 
   const config = await generateInterviewConfig(
-    forge.expertName,
-    forge.domain,
+    forge.expertName!,
+    forge.domain!,
     forge.expertBio || "",
     forge.targetAudience
   )
@@ -121,8 +123,8 @@ app.post("/:forgeId/plan-interview-stream", async (c) => {
 
       const depth = (forge.depth || "standard") as InterviewDepth
       const skeleton = await generateInterviewSkeleton(
-        forge.expertName,
-        forge.domain,
+        forge.expertName!,
+        forge.domain!,
         forge.expertBio || "",
         forge.targetAudience,
         depth
@@ -143,7 +145,7 @@ app.post("/:forgeId/plan-interview-stream", async (c) => {
       await Promise.all(
         skeleton.sections.map(async (section, i) => {
           const result = await generateSectionQuestions(
-            forge.expertName, forge.domain, forge.expertBio || "",
+            forge.expertName!, forge.domain!, forge.expertBio || "",
             forge.targetAudience, section.title, section.goal,
             skeleton.domainContext, depth
           )
@@ -167,7 +169,7 @@ app.post("/:forgeId/plan-interview-stream", async (c) => {
       }
 
       const [firstMessage] = await Promise.all([
-        generateFirstMessage(forge.expertName, forge.domain, skeleton.sections.map((s) => s.title)),
+        generateFirstMessage(forge.expertName!, forge.domain!, skeleton.sections.map((s) => s.title)),
         insertSectionsAndQuestions(forgeId, config.sections),
       ])
       config.firstMessage = firstMessage
@@ -253,8 +255,8 @@ app.post("/:forgeId/interview/opening", async (c) => {
   const isFirst = activeSection.orderIndex === 0 && activeQuestion.orderIndex === 0
 
   const opening = await generateOpeningMessage(
-    forge.expertName,
-    forge.domain,
+    forge.expertName!,
+    forge.domain!,
     activeSection.title,
     activeQuestion.text,
     isFirst
@@ -315,8 +317,8 @@ app.post("/:forgeId/interview/message", async (c) => {
 
       const conductorPromise = (async () => {
         const generator = streamConductorResponse(
-          forge.expertName,
-          forge.domain,
+          forge.expertName!,
+          forge.domain!,
           activeSection.title,
           activeSection.goal || "",
           activeQuestion.text,
@@ -586,8 +588,8 @@ app.post("/:forgeId/follow-up", async (c) => {
 
       // Stage 2: Generate follow-up skeleton (Opus)
       const skeleton = await generateFollowUpSkeleton(
-        forge.expertName,
-        forge.domain,
+        forge.expertName!,
+        forge.domain!,
         forge.expertBio || "",
         forge.targetAudience,
         topic,
@@ -610,7 +612,7 @@ app.post("/:forgeId/follow-up", async (c) => {
       await Promise.all(
         skeleton.sections.map(async (section, i) => {
           const result = await generateSectionQuestions(
-            forge.expertName, forge.domain, forge.expertBio || "",
+            forge.expertName!, forge.domain!, forge.expertBio || "",
             forge.targetAudience, section.title, section.goal,
             skeleton.domainContext, "quick" as InterviewDepth
           )
@@ -634,7 +636,7 @@ app.post("/:forgeId/follow-up", async (c) => {
       }
 
       const [firstMessage] = await Promise.all([
-        generateFirstMessage(forge.expertName, forge.domain, skeleton.sections.map(s => s.title)),
+        generateFirstMessage(forge.expertName!, forge.domain!, skeleton.sections.map(s => s.title)),
         insertSectionsAndQuestions(forgeId, config.sections, nextRound),
       ])
       config.firstMessage = firstMessage
@@ -791,5 +793,110 @@ async function advanceToNextQuestion(
 
   return null
 }
+
+// ============ Intro Phase ============
+
+app.post("/:forgeId/intro/opening", async (c) => {
+  const { forgeId } = c.req.param()
+  const forge = await getForge(forgeId)
+  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  if (forge.status !== "draft") return c.json({ error: "Forge is not in intro phase" }, 400)
+
+  const content = await generateIntroOpening()
+  const metadata = (forge.metadata as any) || {}
+  const introMessages = [{ role: "assistant", content }]
+
+  await db.update(forges).set({
+    metadata: { ...metadata, introMessages },
+    updatedAt: new Date(),
+  }).where(eq(forges.id, forgeId))
+
+  return c.json({ content })
+})
+
+app.post("/:forgeId/intro/message", async (c) => {
+  const { forgeId } = c.req.param()
+  const { content } = await c.req.json()
+
+  const forge = await getForge(forgeId)
+  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  if (forge.status !== "draft") return c.json({ error: "Forge is not in intro phase" }, 400)
+
+  const metadata = (forge.metadata as any) || {}
+  const introMessages: Array<{ role: "user" | "assistant"; content: string }> = [...(metadata.introMessages || [])]
+
+  // Append user message
+  introMessages.push({ role: "user", content })
+
+  return streamSSE(c, async (stream) => {
+    // Run conductor and extractor in parallel
+    let fullResponse = ""
+
+    const conductorPromise = (async () => {
+      for await (const chunk of streamIntroConductorResponse(introMessages)) {
+        fullResponse += chunk
+        await stream.writeSSE({ data: JSON.stringify({ type: "chunk", content: chunk }) })
+      }
+    })()
+
+    const extractorPromise = extractIntroFields(introMessages)
+
+    const [, extracted] = await Promise.all([conductorPromise, extractorPromise])
+
+    // Append assistant message
+    introMessages.push({ role: "assistant", content: fullResponse })
+
+    // Merge extracted fields (keep previous values if new ones are null)
+    const prevExtracted = metadata.introExtracted || {}
+    const newExtracted = {
+      expertName: extracted.expertName || prevExtracted.expertName || null,
+      domain: extracted.domain || prevExtracted.domain || null,
+      targetAudience: extracted.targetAudience || prevExtracted.targetAudience || null,
+    }
+
+    // Save to forge metadata
+    await db.update(forges).set({
+      metadata: { ...metadata, introMessages, introExtracted: newExtracted },
+      updatedAt: new Date(),
+    }).where(eq(forges.id, forgeId))
+
+    await stream.writeSSE({ data: JSON.stringify({ type: "done" }) })
+    await stream.writeSSE({ data: JSON.stringify({ type: "intro_extracted", fields: newExtracted }) })
+  })
+})
+
+app.post("/:forgeId/intro/complete", async (c) => {
+  const { forgeId } = c.req.param()
+  const { depth } = await c.req.json()
+
+  const forge = await getForge(forgeId)
+  if (!forge) return c.json({ error: "Forge not found" }, 404)
+
+  const metadata = (forge.metadata as any) || {}
+  const extracted = metadata.introExtracted || {}
+
+  if (!extracted.expertName || !extracted.domain) {
+    return c.json({ error: "Expert name and domain not yet captured" }, 400)
+  }
+
+  // Build expertBio from full intro transcript (user messages only)
+  const introTranscript = (metadata.introMessages || [])
+    .filter((m: any) => m.role === "user")
+    .map((m: any) => m.content)
+    .join("\n")
+
+  await db.update(forges).set({
+    title: `${extracted.domain} - ${extracted.expertName}`,
+    expertName: extracted.expertName,
+    domain: extracted.domain,
+    targetAudience: extracted.targetAudience || null,
+    expertBio: introTranscript,
+    depth: depth || "standard",
+    status: "planning",
+    updatedAt: new Date(),
+  }).where(eq(forges.id, forgeId))
+
+  return c.json({ ok: true })
+})
 
 export default app

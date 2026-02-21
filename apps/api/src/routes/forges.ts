@@ -42,7 +42,20 @@ app.get("/:id", async (c) => {
 // Create a new forge
 app.post("/", async (c) => {
   const body = await c.req.json()
-  const { title, expertName, expertBio, domain, targetAudience, depth } = body
+  const { title, expertName, expertBio, domain, targetAudience, depth, draft } = body
+
+  // Draft mode: create minimal forge for intro conversation
+  if (draft) {
+    const [forge] = await db
+      .insert(forges)
+      .values({
+        title: "New Forge",
+        status: "draft",
+        metadata: { introMessages: [], introExtracted: {} },
+      })
+      .returning()
+    return c.json(forge, 201)
+  }
 
   if (!title || !expertName || !domain) {
     return c.json({ error: "title, expertName, and domain are required" }, 400)

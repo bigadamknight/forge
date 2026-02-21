@@ -25,9 +25,9 @@ export const forges = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     title: text("title").notNull(),
-    expertName: text("expert_name").notNull(),
+    expertName: text("expert_name"),
     expertBio: text("expert_bio"),
-    domain: text("domain").notNull(),
+    domain: text("domain"),
     targetAudience: text("target_audience"),
     status: text("status", {
       enum: ["draft", "planning", "interviewing", "processing", "generating", "complete", "archived"],

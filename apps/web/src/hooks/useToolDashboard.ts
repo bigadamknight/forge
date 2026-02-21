@@ -106,8 +106,8 @@ export function useToolDashboard(forgeId: string) {
     // Fire constellation nodes in parallel (non-blocking)
     if (forge) {
       getPlanningNodes({
-        expertName: forge.expertName,
-        domain: forge.domain,
+        expertName: forge.expertName!,
+        domain: forge.domain!,
         targetAudience: forge.targetAudience || undefined,
       }).then((result) => setConstellationNodes(result.nodes)).catch(() => {})
     }

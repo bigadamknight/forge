@@ -17,9 +17,9 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 export interface Forge {
   id: string
   title: string
-  expertName: string
+  expertName: string | null
   expertBio: string | null
-  domain: string
+  domain: string | null
   targetAudience: string | null
   depth: string
   status: string
@@ -129,6 +129,13 @@ export function createForge(data: {
   return request('/forges', {
     method: 'POST',
     body: JSON.stringify(data),
+  })
+}
+
+export function createDraftForge(): Promise<Forge> {
+  return request('/forges', {
+    method: 'POST',
+    body: JSON.stringify({ draft: true }),
   })
 }
 
@@ -265,6 +272,81 @@ export type SSEEvent =
   | { type: 'advance'; sectionId: string; questionId: string }
   | { type: 'interview_complete' }
   | { type: 'error'; message: string }
+
+// ============ Intro Phase ============
+
+export interface IntroFields {
+  expertName: string | null
+  domain: string | null
+  targetAudience: string | null
+}
+
+export type IntroSSEEvent =
+  | { type: 'chunk'; content: string }
+  | { type: 'done' }
+  | { type: 'intro_extracted'; fields: IntroFields }
+  | { type: 'error'; message: string }
+
+export function generateIntroOpening(forgeId: string): Promise<{ content: string }> {
+  return request(`/forges/${forgeId}/intro/opening`, { method: 'POST' })
+}
+
+export function sendIntroMessage(
+  forgeId: string,
+  content: string,
+  onEvent: (event: IntroSSEEvent) => void,
+  onDone: () => void,
+  onError: (error: string) => void
+): AbortController {
+  return streamSSE(
+    `${API_BASE}/forges/${forgeId}/intro/message`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+    },
+    onEvent,
+    onDone,
+    onError
+  )
+}
+
+export function completeIntro(forgeId: string, depth: string): Promise<{ ok: boolean }> {
+  return request(`/forges/${forgeId}/intro/complete`, {
+    method: 'POST',
+    body: JSON.stringify({ depth }),
+  })
+}
+
+export function getIntroVoiceSession(forgeId: string): Promise<{
+  agentId: string
+  prompt: string
+  firstMessage: string
+  progress: string
+}> {
+  return request(`/forges/${forgeId}/intro/voice-session`, { method: 'POST' })
+}
+
+export function saveIntroVoiceMessage(
+  forgeId: string,
+  role: string,
+  content: string
+): Promise<{ saved: boolean; count: number }> {
+  return request(`/forges/${forgeId}/intro/voice-message`, {
+    method: 'POST',
+    body: JSON.stringify({ role, content }),
+  })
+}
+
+export function extractIntroVoiceMessage(
+  forgeId: string,
+  _content: string
+): Promise<{ extractions: Array<{ id: string; type: string; content: string; confidence: number; tags: string[] }> }> {
+  return request(`/forges/${forgeId}/intro/voice-extract`, {
+    method: 'POST',
+    body: JSON.stringify({ content: _content }),
+  })
+}
 
 // ============ SSE Stream for Interview Planning ============
 

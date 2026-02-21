@@ -15,6 +15,7 @@ interface ChatPanelProps {
   currentQuestion: string | null
   expertName: string
   onSendMessage: (content: string) => void
+  inputPlaceholder?: string
 }
 
 export default function ChatPanel({
@@ -24,6 +25,7 @@ export default function ChatPanel({
   currentQuestion,
   expertName,
   onSendMessage,
+  inputPlaceholder,
 }: ChatPanelProps) {
   const [input, setInput] = useState('')
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -147,7 +149,7 @@ export default function ChatPanel({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder={isStreaming ? 'Waiting for response...' : isListening ? 'Or type here...' : 'Share your knowledge...'}
+              placeholder={isStreaming ? 'Waiting for response...' : isListening ? 'Or type here...' : (inputPlaceholder || 'Share your knowledge...')}
               disabled={isStreaming}
               rows={1}
               className="w-full px-4 py-3 bg-slate-800  border border-slate-700 focus:border-orange-500 focus:outline-none transition-colors resize-none disabled:opacity-50"

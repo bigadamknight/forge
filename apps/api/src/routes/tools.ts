@@ -65,7 +65,7 @@ app.post("/:forgeId/generate-tool", async (c) => {
 
   let toolConfig
   try {
-    toolConfig = await generateToolConfig(forge.expertName, forge.domain, forge.targetAudience, extractionItems, docItems)
+    toolConfig = await generateToolConfig(forge.expertName!, forge.domain!, forge.targetAudience, extractionItems, docItems)
     console.log("[generate-tool] Opus returned, saving config")
   } catch (err: any) {
     console.error("[generate-tool] Failed:", err.message)
@@ -102,8 +102,8 @@ app.post("/:forgeId/plan-tool", async (c) => {
   console.log(`[plan-tool] Planning for ${forgeId} with ${extractionItems.length} extractions`)
 
   const plan = await generateToolPlan(
-    forge.expertName,
-    forge.domain,
+    forge.expertName!,
+    forge.domain!,
     forge.targetAudience,
     extractionItems,
     docItems
@@ -153,8 +153,8 @@ app.post("/:forgeId/generate-tool-stream", async (c) => {
       } else {
         console.log(`[generate-tool-stream] Planning for ${forgeId}`)
         plan = await generateToolPlan(
-          forge.expertName,
-          forge.domain,
+          forge.expertName!,
+          forge.domain!,
           forge.targetAudience,
           extractionItems,
           docItems
@@ -181,7 +181,7 @@ app.post("/:forgeId/generate-tool-stream", async (c) => {
 
       await Promise.all(
         componentSpecs.map(async (spec, i) => {
-          layout[i] = await generateComponent(spec, knowledgeSummary, documentSection, forge.expertName, forge.domain)
+          layout[i] = await generateComponent(spec, knowledgeSummary, documentSection, forge.expertName!, forge.domain!)
           console.log(`[generate-tool-stream] Finished ${i + 1}/${componentSpecs.length}: ${spec.title}`)
 
           await stream.writeSSE({
@@ -253,8 +253,8 @@ app.get("/:forgeId/tool", async (c) => {
     forge: {
       id: forge.id,
       title: forge.title,
-      expertName: forge.expertName,
-      domain: forge.domain,
+      expertName: forge.expertName!,
+      domain: forge.domain!,
       targetAudience: forge.targetAudience,
     },
     toolConfig: forge.toolConfig,
@@ -479,7 +479,7 @@ app.post("/:forgeId/tool/voice-session", async (c) => {
   const forge = await getForge(forgeId)
   if (!forge) return c.json({ error: "Forge not found" }, 404)
 
-  const expertKnowledge = await loadExpertKnowledge(forgeId, forge.domain, 50)
+  const expertKnowledge = await loadExpertKnowledge(forgeId, forge.domain!, 50)
 
   const allDocuments = await db.select().from(documents)
     .where(eq(documents.forgeId, forgeId))
