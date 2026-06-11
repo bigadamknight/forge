@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "lastUpdated": "2026-02-11",
+  "lastUpdated": "2026-06-11",
   "project": {
     "name": "Forge",
     "description": "AI-powered platform that captures expert knowledge through interviews and generates interactive tools",
@@ -8,50 +8,98 @@
   },
   "techStack": [
     { "name": "TypeScript", "icon": "TS" },
-    { "name": "Bun", "icon": "\u26a1" },
-    { "name": "Hono", "icon": "\ud83d\udd25" },
-    { "name": "React 18", "icon": "\u269b" },
-    { "name": "PostgreSQL 16", "icon": "\ud83d\udc18" },
+    { "name": "Bun", "icon": "⚡" },
+    { "name": "Hono", "icon": "🔥" },
+    { "name": "React 18", "icon": "⚛" },
+    { "name": "PostgreSQL 16", "icon": "🐘" },
     { "name": "Drizzle ORM" },
     { "name": "Vite" },
     { "name": "TailwindCSS" },
-    { "name": "Claude API (Opus 4.6)" },
+    { "name": "Claude API (Opus 4.6 / Sonnet 4.5 / Haiku 4.5)" },
     { "name": "ElevenLabs ConvAI" },
-    { "name": "React Query" }
+    { "name": "Azure OpenAI Embeddings" },
+    { "name": "React Query" },
+    { "name": "MCP SDK" },
+    { "name": "Playwright" }
   ],
   "stats": [
-    { "label": "API Routes", "value": 22 },
-    { "label": "DB Tables", "value": 7 },
-    { "label": "Pages", "value": 5 },
-    { "label": "Toolkit Components", "value": 10 },
-    { "label": "Hooks", "value": 4 },
-    { "label": "AI Services", "value": 5 }
+    { "label": "API Endpoints", "value": 55 },
+    { "label": "DB Tables", "value": 8 },
+    { "label": "Pages", "value": 7 },
+    { "label": "Hooks", "value": 8 },
+    { "label": "AI Services", "value": 7 },
+    { "label": "Toolkit Renderers", "value": 13 },
+    { "label": "MCP Tools", "value": 4 },
+    { "label": "E2E Tests", "value": 31 }
   ],
   "categories": [
-    { "id": "interview", "name": "Interview Pipeline", "icon": "\ud83c\udf99" },
-    { "id": "generation", "name": "Tool Generation", "icon": "\u2699" },
-    { "id": "toolkit", "name": "Interactive Toolkit", "icon": "\ud83e\uddf0" },
-    { "id": "data", "name": "Data Layer", "icon": "\ud83d\uddc4" },
-    { "id": "ui", "name": "Frontend", "icon": "\ud83d\udda5" }
+    { "id": "interview", "name": "Interview Pipeline", "icon": "🎙" },
+    { "id": "generation", "name": "Tool Generation", "icon": "⚙" },
+    { "id": "toolkit", "name": "Interactive Toolkit", "icon": "🧰" },
+    { "id": "knowledge", "name": "Knowledge & MCP", "icon": "🧠" },
+    { "id": "data", "name": "Data Layer", "icon": "🗄" },
+    { "id": "ui", "name": "Frontend", "icon": "🖥" }
   ],
   "components": [
     {
+      "id": "workspaces",
+      "name": "Workspaces",
+      "description": "Top-level container owning the tool, knowledge base, and multiple interviews",
+      "categoryId": "data",
+      "status": "complete",
+      "layers": [
+        { "name": "workspaces.ts", "type": "route" },
+        { "name": "WorkspacePage.tsx", "type": "frontend" },
+        { "name": "WorkspaceSidebar.tsx", "type": "frontend" },
+        { "name": "HomePage.tsx", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "Workspace CRUD with interview summaries", "status": "done" },
+        { "name": "Multiple interviews per workspace", "status": "done" },
+        { "name": "Sidebar navigation (knowledge, documents, tool sections)", "status": "done" },
+        { "name": "Workspace-level toolConfig + knowledgeBase storage", "status": "done" }
+      ],
+      "connections": ["database", "interview-conductor", "tool-generator"]
+    },
+    {
+      "id": "intro-phase",
+      "name": "Conversational Intro",
+      "description": "Chat/voice intro phase that builds the expert profile, replacing the old create-forge form",
+      "categoryId": "interview",
+      "status": "complete",
+      "layers": [
+        { "name": "intro-conductor.ts", "type": "service" },
+        { "name": "intro-extractor.ts", "type": "service" },
+        { "name": "useIntro.ts", "type": "hook" },
+        { "name": "IntroAgenda.tsx", "type": "frontend" },
+        { "name": "ProfileCard.tsx", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "Streaming conversational profile capture", "status": "done" },
+        { "name": "Core vs depth field tracking (name, domain, audience)", "status": "done" },
+        { "name": "Voice intro sessions via ElevenLabs", "status": "done" },
+        { "name": "Profile extraction into expert metadata", "status": "done" }
+      ],
+      "connections": ["claude-api", "voice-interview", "interview-planner"]
+    },
+    {
       "id": "interview-planner",
       "name": "Interview Planner",
-      "description": "Generates structured interview config from expert intro using Opus",
+      "description": "Generates structured interview config (sections, questions, priorities) using Opus",
       "categoryId": "interview",
       "status": "complete",
       "layers": [
         { "name": "interview-planner.ts", "type": "service" },
         { "name": "interviews.ts", "type": "route" },
-        { "name": "NewForgePage.tsx", "type": "frontend" }
+        { "name": "InterviewPlanningAnimation.tsx", "type": "frontend" }
       ],
       "features": [
-        { "name": "Section/question generation from expert intro", "status": "done" },
+        { "name": "Section/question generation from expert profile", "status": "done" },
         { "name": "Extraction priorities per section", "status": "done" },
-        { "name": "Duration estimates", "status": "done" }
+        { "name": "Follow-up topic scoping", "status": "done" },
+        { "name": "Interview depth settings", "status": "done" }
       ],
-      "connections": ["database", "claude-api"]
+      "connections": ["database", "claude-api", "intro-phase"]
     },
     {
       "id": "interview-conductor",
@@ -65,7 +113,9 @@
         { "name": "extractor.ts", "type": "service" },
         { "name": "interviews.ts", "type": "route" },
         { "name": "InterviewPage.tsx", "type": "frontend" },
-        { "name": "useInterview.ts", "type": "hook" }
+        { "name": "useInterview.ts", "type": "hook" },
+        { "name": "AgendaTracker.tsx", "type": "frontend" },
+        { "name": "ExtractionPanel.tsx", "type": "frontend" }
       ],
       "features": [
         { "name": "SSE streaming responses", "status": "done" },
@@ -79,7 +129,7 @@
     {
       "id": "voice-interview",
       "name": "Voice Interview",
-      "description": "ElevenLabs ConvAI voice agent for natural interview conversations",
+      "description": "ElevenLabs ConvAI voice agent for intro and interview conversations",
       "categoryId": "interview",
       "status": "complete",
       "layers": [
@@ -88,161 +138,198 @@
         { "name": "useVoice.ts", "type": "hook" }
       ],
       "features": [
-        { "name": "Voice agent creation with interview context", "status": "done" },
+        { "name": "Voice sessions with interview context", "status": "done" },
+        { "name": "Voice intro sessions (profile capture)", "status": "done" },
         { "name": "Transcript saving and extraction", "status": "done" },
-        { "name": "Resume from partial interview", "status": "done" },
-        { "name": "Real-time voice extraction", "status": "done" }
+        { "name": "Resume from partial interview", "status": "done" }
       ],
-      "connections": ["database", "elevenlabs-api", "interview-conductor"]
+      "connections": ["database", "elevenlabs-api", "interview-conductor", "intro-phase"]
+    },
+    {
+      "id": "follow-up",
+      "name": "Follow-up Interviews & Knowledge Integration",
+      "description": "Topic-scoped follow-up interviews whose knowledge merges into the existing tool",
+      "categoryId": "interview",
+      "status": "complete",
+      "layers": [
+        { "name": "interviews.ts", "type": "route" },
+        { "name": "tools.ts", "type": "route" },
+        { "name": "ToolUpdateReview.tsx", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "Follow-up interview creation (skips intro)", "status": "done" },
+        { "name": "Integrate-knowledge proposal generation", "status": "done" },
+        { "name": "Per-proposal review/approve UI with previews", "status": "done" }
+      ],
+      "connections": ["interview-conductor", "tool-generator", "database", "claude-api"]
     },
     {
       "id": "documents",
       "name": "Document Upload",
-      "description": "Supporting documents (text/URL) that provide additional context for generation",
+      "description": "Upload supporting text/URLs for additional knowledge extraction",
       "categoryId": "interview",
       "status": "complete",
       "layers": [
         { "name": "documents.ts", "type": "route" },
-        { "name": "DocumentUploadPage.tsx", "type": "frontend" }
+        { "name": "DocumentUploadPage.tsx", "type": "frontend" },
+        { "name": "DocumentsPanel.tsx", "type": "frontend" }
       ],
       "features": [
-        { "name": "Text document upload", "status": "done" },
-        { "name": "URL content extraction", "status": "done" },
-        { "name": "Document listing and deletion", "status": "done" }
+        { "name": "Text and URL document ingestion", "status": "done" },
+        { "name": "Knowledge extraction from documents", "status": "done" }
       ],
-      "connections": ["database"]
+      "connections": ["database", "claude-api"]
     },
     {
       "id": "tool-generator",
       "name": "Tool Generator",
-      "description": "Two-phase parallel generation: plan components then generate each in parallel via SSE",
+      "description": "Plan phase (Opus) then parallel component generation (Sonnet) via SSE",
       "categoryId": "generation",
       "status": "complete",
       "layers": [
         { "name": "tool-generator.ts", "type": "service" },
         { "name": "tools.ts", "type": "route" },
-        { "name": "llm.ts", "type": "service" }
+        { "name": "useToolDashboard.ts", "type": "hook" },
+        { "name": "ComponentCreator.tsx", "type": "frontend" }
       ],
       "features": [
-        { "name": "Plan phase (title, theme, component selection)", "status": "done" },
-        { "name": "Parallel component generation (Sonnet)", "status": "done" },
-        { "name": "SSE progress streaming", "status": "done" },
-        { "name": "System prompt caching for parallel efficiency", "status": "done" },
-        { "name": "10 component type schemas", "status": "done" },
-        { "name": "Truncated JSON repair", "status": "done" },
-        { "name": "Component ID deduplication", "status": "done" }
+        { "name": "SSE streaming generation with plan phase", "status": "done" },
+        { "name": "Parallel component generation", "status": "done" },
+        { "name": "On-demand component creation", "status": "done" },
+        { "name": "Knowledge-base-driven generation", "status": "done" }
       ],
-      "connections": ["database", "claude-api", "interview-conductor"]
+      "connections": ["database", "claude-api", "workspaces"]
     },
     {
       "id": "expert-chat",
-      "name": "Ask the Expert",
-      "description": "5-layer cascading context system for personalized expert answers",
+      "name": "Expert Chat & Advice",
+      "description": "Multi-chat expert Q&A with knowledge-first context and structured streaming advice",
       "categoryId": "generation",
       "status": "complete",
       "layers": [
-        { "name": "tools.ts (ask endpoint)", "type": "route" }
+        { "name": "tools.ts", "type": "route" },
+        { "name": "ChatSidebar.tsx", "type": "frontend" },
+        { "name": "useToolUser.ts", "type": "hook" }
       ],
       "features": [
-        { "name": "Domain context layer", "status": "done" },
-        { "name": "Expert knowledge layer (extractions + docs)", "status": "done" },
-        { "name": "Tool context layer (current component)", "status": "done" },
-        { "name": "User situation layer", "status": "done" },
-        { "name": "Question layer", "status": "done" },
-        { "name": "ElevenLabs chat agent creation", "status": "done" }
+        { "name": "Multi-chat sessions with persistence", "status": "done" },
+        { "name": "Knowledge-first expert context (hybrid search)", "status": "done" },
+        { "name": "Structured advice (outline + parallel sections)", "status": "done" },
+        { "name": "Advice persistence", "status": "done" },
+        { "name": "navigate_to_section tool calls", "status": "done" }
       ],
-      "connections": ["database", "claude-api", "elevenlabs-api"]
-    },
-    {
-      "id": "tool-view",
-      "name": "Tool Viewer & Dashboard",
-      "description": "Tab-based tool viewer with dashboard overview, completion tracking, and generation progress",
-      "categoryId": "ui",
-      "status": "complete",
-      "layers": [
-        { "name": "ToolViewPage.tsx", "type": "frontend" },
-        { "name": "useToolDashboard.ts", "type": "hook" },
-        { "name": "ToolRenderer.tsx", "type": "frontend" }
-      ],
-      "features": [
-        { "name": "Dashboard overview with progress", "status": "done" },
-        { "name": "Tab navigation with completion indicators", "status": "done" },
-        { "name": "Generation progress UI (plan + components)", "status": "done" },
-        { "name": "Regenerate with type-to-confirm modal", "status": "done" },
-        { "name": "Reset progress", "status": "done" },
-        { "name": "localStorage completion persistence", "status": "done" }
-      ],
-      "connections": ["tool-generator", "toolkit-components", "inline-editing"]
-    },
-    {
-      "id": "inline-editing",
-      "name": "Inline Editing",
-      "description": "Edit generated tool content in-place with save/cancel and PATCH persistence",
-      "categoryId": "ui",
-      "status": "complete",
-      "layers": [
-        { "name": "EditableText.tsx", "type": "frontend" },
-        { "name": "EditableList.tsx", "type": "frontend" },
-        { "name": "useToolEditor.ts", "type": "hook" },
-        { "name": "tools.ts (PATCH)", "type": "route" }
-      ],
-      "features": [
-        { "name": "contentEditable text fields", "status": "done" },
-        { "name": "Add/remove list items", "status": "done" },
-        { "name": "Dirty state tracking", "status": "done" },
-        { "name": "PATCH endpoint for layout persistence", "status": "done" },
-        { "name": "Save/cancel with react-query invalidation", "status": "done" }
-      ],
-      "connections": ["database", "toolkit-components"]
+      "connections": ["database", "claude-api", "knowledge-search", "toolkit-components"]
     },
     {
       "id": "toolkit-components",
-      "name": "Toolkit Components (10)",
-      "description": "Interactive component library: checklists, decision trees, calculators, scorecards, etc.",
+      "name": "Toolkit Components",
+      "description": "13 interactive renderers: decision trees, calculators, task boards, quizzes, curricula, and more",
       "categoryId": "toolkit",
       "status": "complete",
       "layers": [
-        { "name": "Checklist.tsx", "type": "frontend" },
-        { "name": "DecisionTree.tsx", "type": "frontend" },
-        { "name": "Calculator.tsx", "type": "frontend" },
-        { "name": "InfoCard.tsx", "type": "frontend" },
-        { "name": "StepByStep.tsx", "type": "frontend" },
-        { "name": "QuestionFlow.tsx", "type": "frontend" },
-        { "name": "ScoreCard.tsx", "type": "frontend" },
-        { "name": "ComparisonTable.tsx", "type": "frontend" },
-        { "name": "ContextPanel.tsx", "type": "frontend" },
-        { "name": "RiskAssessment.tsx", "type": "frontend" }
+        { "name": "ToolRenderer.tsx", "type": "frontend" },
+        { "name": "TaskBoard.tsx", "type": "frontend" },
+        { "name": "useTaskBoardState.ts", "type": "hook" },
+        { "name": "EditableText.tsx / EditableList.tsx", "type": "frontend" },
+        { "name": "useToolEditor.ts", "type": "hook" }
       ],
       "features": [
-        { "name": "Completion tracking per component", "status": "done" },
-        { "name": "Edit mode (EditableText/EditableList)", "status": "done" },
-        { "name": "localStorage persistence (QF answers, view prefs)", "status": "done" },
-        { "name": "QuestionFlow variable substitution + expert advice", "status": "done" },
-        { "name": "Checklist list/card view toggle", "status": "done" },
-        { "name": "InfoCard acknowledge/review", "status": "done" },
-        { "name": "Copy-to-clipboard on all components", "status": "done" }
+        { "name": "Renderers: decision_tree, calculator, quiz, curriculum, task_board, checklist, more", "status": "done" },
+        { "name": "Inline editing (contentEditable + list wrappers)", "status": "done" },
+        { "name": "Completion tracking (localStorage per workspace)", "status": "done" },
+        { "name": "Theming", "status": "done" }
       ],
-      "connections": ["inline-editing", "expert-chat"]
+      "connections": ["expert-chat", "interaction-registry"]
+    },
+    {
+      "id": "tool-user-view",
+      "name": "Shareable Tool View",
+      "description": "End-user tool experience at /tool/:workspaceId with sidebar nav, creator features hidden",
+      "categoryId": "ui",
+      "status": "complete",
+      "layers": [
+        { "name": "ToolUserPage.tsx", "type": "frontend" },
+        { "name": "useToolUser.ts", "type": "hook" },
+        { "name": "LandingPage.tsx", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "Sidebar navigation in shared view", "status": "done" },
+        { "name": "Creator-only features hidden", "status": "done" },
+        { "name": "Marketing landing page (9 extraction types)", "status": "done" },
+        { "name": "Tool session tracking", "status": "done" }
+      ],
+      "connections": ["toolkit-components", "expert-chat", "database"]
+    },
+    {
+      "id": "interaction-registry",
+      "name": "Interaction Registry",
+      "description": "Static component + runtime page registries so the voice/chat agent discovers UI capabilities",
+      "categoryId": "toolkit",
+      "status": "complete",
+      "layers": [
+        { "name": "componentInteractions.ts", "type": "service" },
+        { "name": "InteractionContext.tsx", "type": "frontend" },
+        { "name": "pageInteractions.ts", "type": "frontend" }
+      ],
+      "features": [
+        { "name": "ComponentDescriptor registry with AI actions", "status": "done" },
+        { "name": "Runtime page/form registration via useRegisterInteraction", "status": "done" },
+        { "name": "Client-side action handlers + responses", "status": "done" }
+      ],
+      "connections": ["toolkit-components", "voice-interview"]
+    },
+    {
+      "id": "knowledge-search",
+      "name": "Embeddings & Hybrid Search",
+      "description": "Azure OpenAI embeddings with hybrid semantic + keyword search over extractions",
+      "categoryId": "knowledge",
+      "status": "complete",
+      "layers": [
+        { "name": "embeddings.ts", "type": "service" },
+        { "name": "search.ts", "type": "service" },
+        { "name": "backfill-embeddings.ts", "type": "job" }
+      ],
+      "features": [
+        { "name": "Embedding generation with content hashing", "status": "done" },
+        { "name": "Hybrid search with graceful fallback to full scan", "status": "done" },
+        { "name": "Backfill script for existing extractions", "status": "done" }
+      ],
+      "connections": ["database", "azure-openai"]
+    },
+    {
+      "id": "mcp-server",
+      "name": "Forge Knowledge MCP",
+      "description": "Stdio MCP server exposing forge knowledge: forge_list, forge_get, forge_search, forge_ask",
+      "categoryId": "knowledge",
+      "status": "complete",
+      "layers": [
+        { "name": "packages/mcp/src/index.ts", "type": "service" },
+        { "name": "packages/mcp/src/search.ts", "type": "service" }
+      ],
+      "features": [
+        { "name": "forge_list / forge_get tools", "status": "done" },
+        { "name": "forge_search (hybrid)", "status": "done" },
+        { "name": "forge_ask (Claude-synthesized answers)", "status": "done" }
+      ],
+      "connections": ["database", "knowledge-search", "claude-api"]
     },
     {
       "id": "database",
-      "name": "Database",
-      "description": "PostgreSQL 16 with Drizzle ORM, 7 tables, Docker-based",
+      "name": "Database Layer",
+      "description": "8 Drizzle tables: workspaces, forges, sections, questions, messages, extractions, documents, tool sessions",
       "categoryId": "data",
       "status": "complete",
       "layers": [
         { "name": "schema.ts", "type": "database" },
-        { "name": "index.ts", "type": "service" },
-        { "name": "migrate.ts", "type": "migration" }
+        { "name": "migrate.ts", "type": "migration" },
+        { "name": "seed-demo.ts / seed-interviews.ts", "type": "job" }
       ],
       "features": [
-        { "name": "Forge lifecycle (draft to complete)", "status": "done" },
-        { "name": "Interview sections/questions/messages", "status": "done" },
-        { "name": "Knowledge extractions (9 types)", "status": "done" },
-        { "name": "Documents (text + URL)", "status": "done" },
-        { "name": "Tool config (JSONB)", "status": "done" },
-        { "name": "Tool sessions", "status": "done" },
-        { "name": "Seed data and fixtures", "status": "done" }
+        { "name": "Workspace-scoped tool config + knowledge base (jsonb)", "status": "done" },
+        { "name": "Interview state (sections, questions, messages)", "status": "done" },
+        { "name": "9-type extractions with embeddings", "status": "done" },
+        { "name": "Demo and interview seed fixtures", "status": "done" },
+        { "name": "Required DATABASE_URL, parameterized dev password", "status": "done" }
       ],
       "connections": []
     }
@@ -251,70 +338,74 @@
     {
       "name": "Expert Knowledge Capture",
       "steps": [
-        { "label": "Create Forge", "detail": "Expert name, domain, target audience", "type": "frontend" },
-        { "label": "Plan Interview", "detail": "Opus generates sections, questions, extraction priorities", "type": "backend" },
-        { "label": "Conduct Interview", "detail": "SSE streaming: conductor responds, validator checks, extractor captures", "type": "backend" },
-        { "label": "Upload Documents", "detail": "Text or URL supporting context", "type": "frontend" },
-        { "label": "Store Knowledge", "detail": "Extractions + documents saved to PostgreSQL", "type": "database" }
+        { "label": "Conversational Intro", "type": "frontend", "componentId": "intro-phase" },
+        { "label": "Interview Plan (Opus)", "type": "backend", "componentId": "interview-planner" },
+        { "label": "SSE Interview (text/voice)", "type": "backend", "componentId": "interview-conductor" },
+        { "label": "Real-time Extraction", "type": "backend", "componentId": "interview-conductor" },
+        { "label": "Knowledge Base", "type": "database", "componentId": "database" }
       ]
     },
     {
       "name": "Tool Generation",
       "steps": [
-        { "label": "Plan Components", "detail": "Opus selects 4-8 component types from knowledge", "type": "backend" },
-        { "label": "Stream Plan", "detail": "SSE: title, theme, component list to frontend", "type": "backend" },
-        { "label": "Parallel Generate", "detail": "Sonnet generates each component with cached system prompt", "type": "backend" },
-        { "label": "Stream Progress", "detail": "SSE: component-by-component completion updates", "type": "backend" },
-        { "label": "Save & Display", "detail": "toolConfig saved to DB, rendered as interactive tabs", "type": "frontend" }
+        { "label": "Workspace Knowledge", "type": "database", "componentId": "database" },
+        { "label": "Plan Phase (Opus)", "type": "backend", "componentId": "tool-generator" },
+        { "label": "Parallel Components (Sonnet)", "type": "external" },
+        { "label": "SSE Stream", "type": "backend", "componentId": "tool-generator" },
+        { "label": "Interactive Tool", "type": "frontend", "componentId": "toolkit-components" }
       ]
     },
     {
       "name": "Ask the Expert",
       "steps": [
-        { "label": "User Question", "detail": "From QuestionFlow completion or manual ask", "type": "frontend" },
-        { "label": "Build Context", "detail": "5 layers: domain, expert knowledge, tool, user situation, question", "type": "backend" },
-        { "label": "Generate Answer", "detail": "Claude channels expert voice with full context", "type": "backend" },
-        { "label": "Display Response", "detail": "Rendered as markdown in tool sidebar or inline", "type": "frontend" }
+        { "label": "Tool User Question", "type": "frontend", "componentId": "expert-chat" },
+        { "label": "Hybrid Knowledge Search", "type": "backend", "componentId": "knowledge-search" },
+        { "label": "Claude Response / Advice", "type": "external" },
+        { "label": "Persisted Chat Session", "type": "database", "componentId": "database" }
       ]
     },
     {
-      "name": "Inline Editing",
+      "name": "Follow-up Knowledge Integration",
       "steps": [
-        { "label": "Toggle Edit Mode", "detail": "EditableText/EditableList activate across all components", "type": "frontend" },
-        { "label": "User Edits", "detail": "contentEditable text, add/remove list items", "type": "frontend" },
-        { "label": "Track Changes", "detail": "useToolEditor compares editableLayout vs original", "type": "hook" },
-        { "label": "Save", "detail": "PATCH /tool-config updates layout in database", "type": "backend" }
+        { "label": "Follow-up Interview", "type": "backend", "componentId": "follow-up" },
+        { "label": "New Extractions", "type": "database", "componentId": "database" },
+        { "label": "Update Proposals (Opus)", "type": "backend", "componentId": "follow-up" },
+        { "label": "Review & Approve", "type": "frontend", "componentId": "follow-up" },
+        { "label": "Updated Tool Config", "type": "database", "componentId": "workspaces" }
+      ]
+    },
+    {
+      "name": "External Knowledge Access (MCP)",
+      "steps": [
+        { "label": "MCP Client (Claude Code)", "type": "external" },
+        { "label": "forge-knowledge Server", "type": "backend", "componentId": "mcp-server" },
+        { "label": "Hybrid Search", "type": "backend", "componentId": "knowledge-search" },
+        { "label": "Synthesized Answer", "type": "external" }
       ]
     }
   ],
   "roadmap": [
     {
-      "title": "Operations Mode (Weekly Task Board)",
+      "title": "Frontend Resilience",
       "priority": "high",
       "items": [
-        "TaskBoard component with To Do / In Progress / Done columns",
-        "AI generates recurring weekly tasks from toolkit content",
-        "Two-phase flow: Setup toolkit then Operations board",
-        "Weekly reset logic with completion history",
-        "Tasks link back to relevant toolkit sections"
+        "Add \"new version available\" update banner (issue #1)"
       ]
     },
     {
       "title": "Sharing & Distribution",
       "priority": "medium",
       "items": [
-        "Public shareable tool URLs",
-        "Embed toolkit in external sites",
-        "Export as PDF or markdown"
+        "Auth / access control for shared tools",
+        "Public tool URLs with workspace-level permissions"
       ]
     },
     {
       "title": "Testing & Quality",
       "priority": "medium",
       "items": [
-        "Unit tests for AI services (conductor, validator, extractor)",
-        "E2E tests for generation flow",
-        "Component tests for toolkit interactions"
+        "Unit test coverage for API services (only E2E exists)",
+        "E2E coverage for follow-up interview and knowledge integration flows"
       ]
     }
   ]
