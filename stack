@@ -13,18 +13,21 @@ function start() {
   echo "Starting Forge..."
   db:up
   sleep 2
-  api &
-  web &
-  echo ""
-  echo "  Frontend: http://localhost:3070"
-  echo "  API:      http://localhost:3071"
-  echo "  DB:       localhost:5435"
-  echo ""
-  wait
+  if ! tmux has-session -t forge-api 2>/dev/null; then
+    tmux new-session -d -s forge-api -c "$SCRIPT_DIR" \
+      "bun run --cwd apps/api src/index.ts; echo '[api exited]'; tail -f /dev/null"
+  fi
+  if ! tmux has-session -t forge-fe 2>/dev/null; then
+    tmux new-session -d -s forge-fe -c "$SCRIPT_DIR" \
+      "yarn workspace @forge/web dev; echo '[fe exited]'; tail -f /dev/null"
+  fi
+  echo "forge: fe=3070 api=3071 db=5435"
 }
 
 function stop() {
   echo "Stopping Forge..."
+  tmux kill-session -t forge-api 2>/dev/null || true
+  tmux kill-session -t forge-fe 2>/dev/null || true
   kill $(lsof -ti:3071) 2>/dev/null || true
   kill $(lsof -ti:3070) 2>/dev/null || true
   docker compose stop
@@ -92,6 +95,10 @@ function install() {
 }
 
 # ============ Help ============
+
+function status() {
+    docker compose ps 2>/dev/null || true
+}
 
 function help() {
   cat << 'EOF'

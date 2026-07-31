@@ -1,5 +1,5 @@
 import { generateJSON, generateText, SONNET } from "../lib/llm"
-import type { InterviewConfig, InterviewDepth } from "@forge/shared"
+import type { InterviewConfig, InterviewDepth, ExpertProfile } from "@forge/shared"
 import { DEPTH_PRESETS } from "@forge/shared"
 
 const SYSTEM_PROMPT = `You are an expert interview designer for Forge, a platform that captures expert knowledge and turns it into interactive tools for non-experts.
@@ -69,23 +69,49 @@ export interface SectionQuestions {
   questions: Array<{ text: string; goal: string }>
 }
 
+function buildProfileContext(profile: ExpertProfile | null): string {
+  if (!profile) return ""
+  const lines: string[] = []
+  if (profile.yearsExperience) lines.push(`**Experience:** ${profile.yearsExperience}`)
+  if (profile.specializations?.length) lines.push(`**Specializations:** ${profile.specializations.join(", ")}`)
+  if (profile.uniqueApproach) lines.push(`**Unique Approach:** ${profile.uniqueApproach}`)
+  if (profile.commonMistakes?.length) lines.push(`**Common Mistakes They See:** ${profile.commonMistakes.join("; ")}`)
+  if (profile.notableAchievements?.length) lines.push(`**Notable Achievements:** ${profile.notableAchievements.join("; ")}`)
+  if (profile.industriesOrContexts?.length) lines.push(`**Industries/Contexts:** ${profile.industriesOrContexts.join(", ")}`)
+  if (profile.passionArea) lines.push(`**Passion Area:** ${profile.passionArea}`)
+  if (profile.problemsTheySolve?.length) lines.push(`**Problems They Solve:** ${profile.problemsTheySolve.join("; ")}`)
+  if (lines.length === 0) return ""
+  return `\n**Expert Profile:**\n${lines.join("\n")}\n`
+}
+
 export async function generateInterviewSkeleton(
   expertName: string,
   domain: string,
   expertBio: string,
   targetAudience: string | null,
-  depth: InterviewDepth = "standard"
+  depth: InterviewDepth = "standard",
+  profile: ExpertProfile | null = null
 ): Promise<InterviewSkeleton> {
   const preset = DEPTH_PRESETS[depth]
+  const profileContext = buildProfileContext(profile)
+  const profileGuidance = profile ? `
+TAILORING INSTRUCTIONS (based on expert profile):
+${profile.specializations?.length ? `- Create sections around their specializations: ${profile.specializations.join(", ")}` : ""}
+${profile.commonMistakes?.length ? `- Include a section or questions about common pitfalls/mistakes they've identified` : ""}
+${profile.uniqueApproach ? `- Ensure we capture what makes their approach different` : ""}
+${profile.passionArea ? `- Include their passion area "${profile.passionArea}" as a dedicated section or prominent topic` : ""}
+${profile.problemsTheySolve?.length ? `- Structure sections around the problems they solve: ${profile.problemsTheySolve.join(", ")}` : ""}
+` : ""
+
   const prompt = `Design an interview structure for the following expert:
 
 **Expert:** ${expertName}
 **Domain:** ${domain}
 **Background:** ${expertBio}
 **Target Audience:** ${targetAudience || "General public"}
-
+${profileContext}
 CRITICAL CONSTRAINT: You MUST create exactly ${preset.sections.min}-${preset.sections.max} sections. No more than ${preset.sections.max}. This is a ${preset.label.toLowerCase()} interview (~${preset.estimatedMinutes} minutes) so keep it focused and concise. Combine related topics into fewer, broader sections rather than splitting them out.
-
+${profileGuidance}
 Do NOT include questions yet - only section titles and goals.
 
 Respond with JSON only:
@@ -124,9 +150,11 @@ export async function generateSectionQuestions(
   sectionTitle: string,
   sectionGoal: string,
   domainContext: string,
-  depth: InterviewDepth = "standard"
+  depth: InterviewDepth = "standard",
+  profile: ExpertProfile | null = null
 ): Promise<SectionQuestions> {
   const preset = DEPTH_PRESETS[depth]
+  const profileContext = buildProfileContext(profile)
   const prompt = `You are designing interview questions for one section of an expert interview.
 
 **Expert:** ${expertName}
@@ -134,7 +162,7 @@ export async function generateSectionQuestions(
 **Background:** ${expertBio}
 **Target Audience:** ${targetAudience || "General public"}
 **Domain Context:** ${domainContext}
-
+${profileContext}
 **Section:** ${sectionTitle}
 **Section Goal:** ${sectionGoal}
 
@@ -175,16 +203,19 @@ export async function generateFollowUpSkeleton(
   targetAudience: string | null,
   topic: string,
   existingKnowledge: string,
-  existingComponents: string[]
+  existingComponents: string[],
+  profile: ExpertProfile | null = null
 ): Promise<InterviewSkeleton> {
   const componentList = existingComponents.map((t, i) => `${i + 1}. ${t}`).join("\n")
 
+  const profileContext = buildProfileContext(profile)
   const prompt = `Design a FOLLOW-UP interview structure for an expert who has already been interviewed.
 
 **Expert:** ${expertName}
 **Domain:** ${domain}
 **Background:** ${expertBio}
 **Target Audience:** ${targetAudience || "General public"}
+${profileContext}
 
 **Follow-up Focus:** ${topic}
 

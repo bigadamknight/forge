@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
-import { db, forges, interviewSections, interviewQuestions, messages, extractions } from "@forge/db"
-import { eq, asc, and, or } from "drizzle-orm"
+import { db, workspaces, forges, interviewSections, interviewQuestions, messages, extractions } from "@forge/db"
+import { eq, asc, and, or, inArray } from "drizzle-orm"
 import { generateInterviewConfig, generateInterviewSkeleton, generateFollowUpSkeleton, generateSectionQuestions, generateFirstMessage, type SectionQuestions } from "../services/interview-planner"
 import { buildKnowledgeSummary } from "../services/tool-generator"
 import { generateJSON, HAIKU } from "../lib/llm"
@@ -9,9 +9,12 @@ import type { InterviewDepth } from "@forge/shared"
 import { embedExtractionAsync } from "../lib/embeddings"
 import { streamConductorResponse, generateOpeningMessage } from "../services/conductor"
 import { streamIntroConductorResponse, generateIntroOpening } from "../services/intro-conductor"
-import { extractIntroFields } from "../services/intro-extractor"
+import { extractIntroFields, extractExpertProfile } from "../services/intro-extractor"
+import type { ExpertProfile, CustomExtractionType } from "@forge/shared"
+import { EMPTY_EXPERT_PROFILE, getExtractionTypeKeys } from "@forge/shared"
 import { validateResponse, CONFIDENCE_THRESHOLD } from "../services/validator"
 import { extractKnowledge } from "../services/extractor"
+import { findActiveQuestion, advanceToNextQuestion, completeRound } from "../services/interview-progress"
 
 const app = new Hono()
 
@@ -20,6 +23,13 @@ const app = new Hono()
 async function getForge(forgeId: string) {
   const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
   return forge ?? null
+}
+
+async function getWorkspaceCustomTypes(workspaceId: string): Promise<CustomExtractionType[]> {
+  const [workspace] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1)
+  if (!workspace) return []
+  const metadata = (workspace.metadata as any) || {}
+  return metadata.customExtractionTypes || []
 }
 
 async function insertSectionsAndQuestions(
@@ -47,34 +57,6 @@ async function insertSectionsAndQuestions(
         status: si === 0 && qi === 0 ? "active" : "pending",
       })
     }
-  }
-}
-
-async function completeRound(forgeId: string, round: number): Promise<void> {
-  if (round > 1) {
-    await db.update(forges).set({
-      status: "complete",
-      updatedAt: new Date(),
-    }).where(eq(forges.id, forgeId))
-
-    const forge = await getForge(forgeId)
-    if (forge) {
-      const metadata = (forge.metadata as any) || {}
-      const rounds = metadata.interviewRounds || []
-      const roundEntry = rounds.find((r: any) => r.round === round)
-      if (roundEntry) {
-        roundEntry.status = "completed"
-        roundEntry.completedAt = new Date().toISOString()
-      }
-      await db.update(forges).set({
-        metadata: { ...metadata, interviewRounds: rounds },
-      }).where(eq(forges.id, forgeId))
-    }
-  } else {
-    await db.update(forges).set({
-      status: "processing",
-      updatedAt: new Date(),
-    }).where(eq(forges.id, forgeId))
   }
 }
 
@@ -122,12 +104,22 @@ app.post("/:forgeId/plan-interview-stream", async (c) => {
       await stream.writeSSE({ data: JSON.stringify({ type: "analysing" }) })
 
       const depth = (forge.depth || "standard") as InterviewDepth
+      const forgeMetadata = (forge.metadata as any) || {}
+      const profile: ExpertProfile | null = forgeMetadata.introProfile || null
+      const followUpTopic: string | null = forgeMetadata.followUpTopic || null
+
+      // For follow-up interviews, scope the bio/domain to the specific topic
+      const expertBio = followUpTopic
+        ? `${forge.expertBio || ""}\n\nFOCUS: This is a follow-up interview specifically about: ${followUpTopic}. Design all sections around this topic.`
+        : forge.expertBio || ""
+
       const skeleton = await generateInterviewSkeleton(
         forge.expertName!,
         forge.domain!,
-        forge.expertBio || "",
+        expertBio,
         forge.targetAudience,
-        depth
+        depth,
+        profile
       )
 
       await stream.writeSSE({
@@ -147,7 +139,7 @@ app.post("/:forgeId/plan-interview-stream", async (c) => {
           const result = await generateSectionQuestions(
             forge.expertName!, forge.domain!, forge.expertBio || "",
             forge.targetAudience, section.title, section.goal,
-            skeleton.domainContext, depth
+            skeleton.domainContext, depth, profile
           )
           sectionQuestions[i] = result
           await stream.writeSSE({
@@ -305,9 +297,11 @@ app.post("/:forgeId/interview/message", async (c) => {
     content: m.content,
   }))
 
-  // Get existing extractions for dedup
-  const existing = await db.select().from(extractions)
-    .where(eq(extractions.forgeId, forgeId))
+  // Get existing extractions for dedup + workspace custom types
+  const [existing, customTypes] = await Promise.all([
+    db.select().from(extractions).where(eq(extractions.forgeId, forgeId)),
+    getWorkspaceCustomTypes(forge.workspaceId),
+  ])
   const existingContents = existing.map((e) => e.content)
 
   return streamSSE(c, async (stream) => {
@@ -342,7 +336,9 @@ app.post("/:forgeId/interview/message", async (c) => {
         content,
         activeSection.title,
         activeQuestion.text,
-        existingContents
+        existingContents,
+        undefined,
+        customTypes
       )
 
       // Wait for all three
@@ -508,9 +504,14 @@ app.patch("/:forgeId/extractions/:extractionId", async (c) => {
   const { forgeId, extractionId } = c.req.param()
   const { content, type, tags, confidence } = await c.req.json()
 
-  const VALID_TYPES = ["fact", "procedure", "decision_rule", "warning", "tip", "metric", "definition", "example", "context"]
-  if (type !== undefined && !VALID_TYPES.includes(type)) {
-    return c.json({ error: "Invalid extraction type" }, 400)
+  if (type !== undefined) {
+    const forge = await getForge(forgeId)
+    if (!forge) return c.json({ error: "Forge not found" }, 404)
+    const customTypes = await getWorkspaceCustomTypes(forge.workspaceId)
+    const validTypes = getExtractionTypeKeys(customTypes)
+    if (!validTypes.includes(type)) {
+      return c.json({ error: "Invalid extraction type" }, 400)
+    }
   }
 
   const updates: Record<string, unknown> = {}
@@ -563,13 +564,12 @@ app.post("/:forgeId/follow-up", async (c) => {
   const forge = await getForge(forgeId)
   if (!forge) return c.json({ error: "Forge not found" }, 404)
 
-  const existingSections = await db.select().from(interviewSections)
-    .where(eq(interviewSections.forgeId, forgeId))
-  const nextRound = Math.max(1, ...existingSections.map(s => s.round)) + 1
-
-  // Load existing extractions for context
+  // Load existing extractions across entire workspace for context
+  const workspaceForges = await db.select({ id: forges.id })
+    .from(forges).where(eq(forges.workspaceId, forge.workspaceId))
+  const forgeIds = workspaceForges.map(f => f.id)
   const allExtractions = await db.select().from(extractions)
-    .where(eq(extractions.forgeId, forgeId))
+    .where(inArray(extractions.forgeId, forgeIds))
     .orderBy(asc(extractions.createdAt))
   const extractionItems = allExtractions.map(e => ({
     type: e.type,
@@ -579,14 +579,27 @@ app.post("/:forgeId/follow-up", async (c) => {
   }))
   const existingKnowledge = buildKnowledgeSummary(extractionItems)
 
-  const existingComponents = ((forge.toolConfig as any)?.layout || []).map((c: any) => c.title as string)
+  // Get existing components from workspace toolConfig
+  const [workspace] = await db.select().from(workspaces)
+    .where(eq(workspaces.id, forge.workspaceId)).limit(1)
+  const existingComponents = ((workspace?.toolConfig as any)?.layout || []).map((c: any) => c.title as string)
+
+  // Create a new forge (interview) in the same workspace
+  const [newForge] = await db.insert(forges).values({
+    workspaceId: forge.workspaceId,
+    title: `Follow-up: ${topic}`,
+    expertName: forge.expertName,
+    domain: forge.domain,
+    targetAudience: forge.targetAudience,
+    depth: forge.depth,
+    status: "planning",
+    metadata: { followUpTopic: topic },
+  }).returning()
 
   return streamSSE(c, async (stream) => {
     try {
-      // Stage 1: Analysing
       await stream.writeSSE({ data: JSON.stringify({ type: "analysing" }) })
 
-      // Stage 2: Generate follow-up skeleton (Opus)
       const skeleton = await generateFollowUpSkeleton(
         forge.expertName!,
         forge.domain!,
@@ -637,28 +650,18 @@ app.post("/:forgeId/follow-up", async (c) => {
 
       const [firstMessage] = await Promise.all([
         generateFirstMessage(forge.expertName!, forge.domain!, skeleton.sections.map(s => s.title)),
-        insertSectionsAndQuestions(forgeId, config.sections, nextRound),
+        insertSectionsAndQuestions(newForge.id, config.sections),
       ])
       config.firstMessage = firstMessage
 
-      // Store round metadata
-      const metadata = (forge.metadata as any) || {}
-      const interviewRounds = metadata.interviewRounds || []
-      interviewRounds.push({
-        round: nextRound,
-        topic,
-        status: "interviewing",
-        startedAt: new Date().toISOString(),
-      })
-
       await db.update(forges).set({
         interviewConfig: config,
-        metadata: { ...metadata, interviewRounds },
+        status: "interviewing",
         updatedAt: new Date(),
-      }).where(eq(forges.id, forgeId))
+      }).where(eq(forges.id, newForge.id))
 
       await stream.writeSSE({
-        data: JSON.stringify({ type: "complete", forgeId, round: nextRound }),
+        data: JSON.stringify({ type: "complete", forgeId: newForge.id }),
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error"
@@ -678,14 +681,22 @@ app.post("/:forgeId/suggest-followups", async (c) => {
   const forge = await getForge(forgeId)
   if (!forge) return c.json({ error: "Forge not found" }, 404)
 
+  // Load extractions from all forges in workspace
+  const workspaceForges = await db.select({ id: forges.id })
+    .from(forges).where(eq(forges.workspaceId, forge.workspaceId))
+  const forgeIds = workspaceForges.map(f => f.id)
   const allExtractions = await db.select().from(extractions)
-    .where(eq(extractions.forgeId, forgeId))
+    .where(inArray(extractions.forgeId, forgeIds))
     .orderBy(asc(extractions.createdAt))
   const extractionItems = allExtractions.map(e => ({
     type: e.type, content: e.content, confidence: e.confidence, tags: e.tags,
   }))
   const knowledgeSummary = buildKnowledgeSummary(extractionItems)
-  const componentTitles = ((forge.toolConfig as any)?.layout || []).map((c: any) => c.title).join(", ")
+
+  // Get component titles from workspace toolConfig
+  const [workspace] = await db.select().from(workspaces)
+    .where(eq(workspaces.id, forge.workspaceId)).limit(1)
+  const componentTitles = ((workspace?.toolConfig as any)?.layout || []).map((c: any) => c.title).join(", ")
 
   const result = await generateJSON<{ suggestions: Array<{ topic: string, reason: string }> }>(
     `Analyze the existing knowledge and tool components for this expert, then suggest 3 follow-up interview topics that would fill gaps or deepen the most valuable areas.
@@ -710,89 +721,6 @@ Return JSON: { "suggestions": [{ "topic": "short topic phrase", "reason": "why t
 
   return c.json(result)
 })
-
-async function findActiveQuestion(forgeId: string) {
-  const allSections = await db.select().from(interviewSections)
-    .where(eq(interviewSections.forgeId, forgeId))
-    .orderBy(asc(interviewSections.orderIndex))
-  const currentRound = Math.max(1, ...allSections.map(s => s.round))
-  const activeSection = allSections.find(s => s.round === currentRound && s.status === "active")
-
-  if (!activeSection) return { activeSection: null, activeQuestion: null }
-
-  const [activeQuestion] = await db.select().from(interviewQuestions)
-    .where(and(
-      eq(interviewQuestions.sectionId, activeSection.id),
-      eq(interviewQuestions.status, "active")
-    ))
-    .orderBy(asc(interviewQuestions.orderIndex))
-    .limit(1)
-
-  return { activeSection, activeQuestion: activeQuestion ?? null }
-}
-
-async function advanceToNextQuestion(
-  forgeId: string,
-  currentSectionId: string,
-  currentQuestionId: string
-): Promise<{ sectionId: string; questionId: string } | null> {
-  await db.update(interviewQuestions).set({
-    status: "answered",
-    answeredAt: new Date(),
-  }).where(eq(interviewQuestions.id, currentQuestionId))
-
-  // Try next question in current section
-  const [nextQuestion] = await db.select().from(interviewQuestions)
-    .where(and(
-      eq(interviewQuestions.sectionId, currentSectionId),
-      eq(interviewQuestions.status, "pending")
-    ))
-    .orderBy(asc(interviewQuestions.orderIndex))
-    .limit(1)
-
-  if (nextQuestion) {
-    await db.update(interviewQuestions).set({ status: "active" })
-      .where(eq(interviewQuestions.id, nextQuestion.id))
-    return { sectionId: currentSectionId, questionId: nextQuestion.id }
-  }
-
-  // Section complete
-  await db.update(interviewSections).set({
-    status: "completed",
-    completedAt: new Date(),
-  }).where(eq(interviewSections.id, currentSectionId))
-
-  // Find next pending section in the same round
-  const [currentSection] = await db.select().from(interviewSections)
-    .where(eq(interviewSections.id, currentSectionId)).limit(1)
-  const round = currentSection?.round ?? 1
-
-  const allPendingSections = await db.select().from(interviewSections)
-    .where(and(
-      eq(interviewSections.forgeId, forgeId),
-      eq(interviewSections.status, "pending")
-    ))
-    .orderBy(asc(interviewSections.orderIndex))
-  const nextSection = allPendingSections.find(s => s.round === round)
-
-  if (!nextSection) return null
-
-  await db.update(interviewSections).set({ status: "active" })
-    .where(eq(interviewSections.id, nextSection.id))
-
-  const [firstQuestion] = await db.select().from(interviewQuestions)
-    .where(eq(interviewQuestions.sectionId, nextSection.id))
-    .orderBy(asc(interviewQuestions.orderIndex))
-    .limit(1)
-
-  if (firstQuestion) {
-    await db.update(interviewQuestions).set({ status: "active" })
-      .where(eq(interviewQuestions.id, firstQuestion.id))
-    return { sectionId: nextSection.id, questionId: firstQuestion.id }
-  }
-
-  return null
-}
 
 // ============ Intro Phase ============
 
@@ -824,44 +752,103 @@ app.post("/:forgeId/intro/message", async (c) => {
 
   const metadata = (forge.metadata as any) || {}
   const introMessages: Array<{ role: "user" | "assistant"; content: string }> = [...(metadata.introMessages || [])]
+  const previousProfile: ExpertProfile = metadata.introProfile || EMPTY_EXPERT_PROFILE
 
   // Append user message
   introMessages.push({ role: "user", content })
 
+  // Get existing extractions for dedup + workspace custom types
+  const [existingExtractions, introCustomTypes] = await Promise.all([
+    db.select().from(extractions).where(eq(extractions.forgeId, forgeId)),
+    getWorkspaceCustomTypes(forge.workspaceId),
+  ])
+  const existingContents = existingExtractions.map((e) => e.content)
+
   return streamSSE(c, async (stream) => {
-    // Run conductor and extractor in parallel
+    // Run conductor, profile extractor, and knowledge extractor in parallel
     let fullResponse = ""
 
     const conductorPromise = (async () => {
-      for await (const chunk of streamIntroConductorResponse(introMessages)) {
+      for await (const chunk of streamIntroConductorResponse(introMessages, previousProfile)) {
         fullResponse += chunk
         await stream.writeSSE({ data: JSON.stringify({ type: "chunk", content: chunk }) })
       }
     })()
 
-    const extractorPromise = extractIntroFields(introMessages)
+    const profilePromise = extractExpertProfile(introMessages, previousProfile)
 
-    const [, extracted] = await Promise.all([conductorPromise, extractorPromise])
+    const knowledgePromise = extractKnowledge(
+      content,
+      forge.domain || "General",
+      "Intro conversation",
+      existingContents,
+      "low",
+      introCustomTypes
+    )
+
+    const [, profile, extractedItems] = await Promise.all([conductorPromise, profilePromise, knowledgePromise])
 
     // Append assistant message
     introMessages.push({ role: "assistant", content: fullResponse })
 
-    // Merge extracted fields (keep previous values if new ones are null)
-    const prevExtracted = metadata.introExtracted || {}
+    // Merge profile (keep previous values if new ones are null)
+    const mergedProfile: ExpertProfile = { ...EMPTY_EXPERT_PROFILE }
+    for (const key of Object.keys(EMPTY_EXPERT_PROFILE) as Array<keyof ExpertProfile>) {
+      const newVal = profile[key]
+      const prevVal = previousProfile[key]
+      if (newVal !== null && newVal !== undefined) {
+        ;(mergedProfile as any)[key] = newVal
+      } else if (prevVal !== null && prevVal !== undefined) {
+        ;(mergedProfile as any)[key] = prevVal
+      }
+    }
+
+    // Backward compat: also maintain introExtracted
     const newExtracted = {
-      expertName: extracted.expertName || prevExtracted.expertName || null,
-      domain: extracted.domain || prevExtracted.domain || null,
-      targetAudience: extracted.targetAudience || prevExtracted.targetAudience || null,
+      expertName: mergedProfile.expertName,
+      domain: mergedProfile.domain,
+      targetAudience: mergedProfile.targetAudience,
     }
 
     // Save to forge metadata
     await db.update(forges).set({
-      metadata: { ...metadata, introMessages, introExtracted: newExtracted },
+      metadata: { ...metadata, introMessages, introProfile: mergedProfile, introExtracted: newExtracted },
       updatedAt: new Date(),
     }).where(eq(forges.id, forgeId))
 
     await stream.writeSSE({ data: JSON.stringify({ type: "done" }) })
+    await stream.writeSSE({ data: JSON.stringify({ type: "profile_updated", profile: mergedProfile }) })
     await stream.writeSSE({ data: JSON.stringify({ type: "intro_extracted", fields: newExtracted }) })
+
+    // Save knowledge extractions
+    if (extractedItems.length > 0) {
+      const savedExtractions = []
+      for (const item of extractedItems) {
+        const [saved] = await db.insert(extractions).values({
+          forgeId,
+          type: item.type,
+          content: item.content,
+          structured: item.structured || null,
+          confidence: item.confidence,
+          tags: item.tags,
+        }).returning()
+        savedExtractions.push(saved)
+        embedExtractionAsync(saved.id, item.type, item.content)
+      }
+
+      await stream.writeSSE({
+        data: JSON.stringify({
+          type: "extraction",
+          items: savedExtractions.map((e) => ({
+            id: e.id,
+            type: e.type,
+            content: e.content,
+            confidence: e.confidence,
+            tags: e.tags,
+          })),
+        }),
+      })
+    }
   })
 })
 
@@ -873,9 +860,9 @@ app.post("/:forgeId/intro/complete", async (c) => {
   if (!forge) return c.json({ error: "Forge not found" }, 404)
 
   const metadata = (forge.metadata as any) || {}
-  const extracted = metadata.introExtracted || {}
+  const profile: ExpertProfile = metadata.introProfile || metadata.introExtracted || {}
 
-  if (!extracted.expertName || !extracted.domain) {
+  if (!profile.expertName || !profile.domain) {
     return c.json({ error: "Expert name and domain not yet captured" }, 400)
   }
 
@@ -886,15 +873,22 @@ app.post("/:forgeId/intro/complete", async (c) => {
     .join("\n")
 
   await db.update(forges).set({
-    title: `${extracted.domain} - ${extracted.expertName}`,
-    expertName: extracted.expertName,
-    domain: extracted.domain,
-    targetAudience: extracted.targetAudience || null,
+    title: `${profile.domain} - ${profile.expertName}`,
+    expertName: profile.expertName,
+    domain: profile.domain,
+    targetAudience: profile.targetAudience || null,
     expertBio: introTranscript,
     depth: depth || "standard",
     status: "planning",
+    metadata: { ...metadata, introProfile: profile },
     updatedAt: new Date(),
   }).where(eq(forges.id, forgeId))
+
+  // Also update workspace title
+  await db.update(workspaces).set({
+    title: `${profile.domain} - ${profile.expertName}`,
+    updatedAt: new Date(),
+  }).where(eq(workspaces.id, forge.workspaceId))
 
   return c.json({ ok: true })
 })

@@ -207,6 +207,97 @@ export async function searchHybrid(
     .map(({ result, score }) => ({ ...result, score }))
 }
 
+// ============ Knowledge Unit Search (workspace-scoped) ============
+
+export async function searchUnitsSimilar(
+  workspaceId: string,
+  query: string,
+  topK: number = 10
+): Promise<SearchResult[]> {
+  const queryEmbedding = await generateEmbedding(query)
+  if (!queryEmbedding) return []
+
+  const vectorStr = toVectorStr(queryEmbedding)
+  const rows = await db.execute(
+    sql`SELECT id, type, content, confidence, tags::text as tags, 1 - (embedding <=> ${vectorStr}::vector) AS score
+        FROM knowledge_units
+        WHERE workspace_id = ${workspaceId} AND status IN ('proposed', 'approved') AND embedding IS NOT NULL
+        ORDER BY embedding <=> ${vectorStr}::vector ASC
+        LIMIT ${topK}`
+  )
+
+  return (rows as any[]).map((r: any) => mapRow(r, "score"))
+}
+
+export async function searchUnitsKeyword(
+  workspaceId: string,
+  query: string,
+  topK: number = 10
+): Promise<SearchResult[]> {
+  const rows = await db.execute(
+    sql`SELECT id, type, content, confidence, tags::text as tags,
+           GREATEST(similarity(content, ${query}), 0.01) AS score
+        FROM knowledge_units
+        WHERE workspace_id = ${workspaceId} AND status IN ('proposed', 'approved')
+          AND (content ILIKE ${'%' + query + '%'} OR content % ${query})
+        ORDER BY score DESC
+        LIMIT ${topK}`
+  )
+
+  return (rows as any[]).map((r: any) => mapRow(r, "score"))
+}
+
+export async function searchUnitsHybrid(
+  workspaceId: string,
+  query: string,
+  topK: number = 15
+): Promise<SearchResult[]> {
+  const [semanticResults, keywordResults] = await Promise.all([
+    searchUnitsSimilar(workspaceId, query, topK * 2),
+    searchUnitsKeyword(workspaceId, query, topK * 2),
+  ])
+
+  const K = 60
+  const scores = new Map<string, { result: SearchResult; score: number }>()
+
+  for (const results of [semanticResults, keywordResults]) {
+    for (let rank = 0; rank < results.length; rank++) {
+      const r = results[rank]
+      const rrfScore = 1 / (K + rank)
+      const existing = scores.get(r.id)
+      if (existing) {
+        existing.score += rrfScore
+      } else {
+        scores.set(r.id, { result: r, score: rrfScore })
+      }
+    }
+  }
+
+  return [...scores.values()]
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK)
+    .map(({ result, score }) => ({ ...result, score }))
+}
+
+export async function hasUnitEmbeddings(workspaceId: string): Promise<boolean> {
+  const result = await db.execute(
+    sql`SELECT COUNT(*) as count FROM knowledge_units WHERE workspace_id = ${workspaceId} AND embedding IS NOT NULL`
+  )
+  return parseInt((result[0] as any).count) > 0
+}
+
+export function embedKnowledgeUnitAsync(unitId: string, type: string, content: string) {
+  if (!EMBEDDING_URL || !EMBEDDING_API_KEY) return
+
+  generateEmbedding(`[${type}] ${content}`).then((embedding) => {
+    if (!embedding) return
+    const vectorStr = toVectorStr(embedding)
+    db.execute(
+      sql`UPDATE knowledge_units SET embedding = ${vectorStr}::vector WHERE id = ${unitId}`
+    ).catch((err) => console.error(`[embeddings] Failed to save unit embedding for ${unitId}:`, err))
+  }).catch((err) => console.error(`[embeddings] Failed to generate embedding:`, err))
+}
+
 // ============ Helpers ============
 
 function parseVector(vectorStr: string): number[] {

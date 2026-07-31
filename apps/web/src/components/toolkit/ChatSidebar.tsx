@@ -2,7 +2,9 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { MessageCircle, X, Send, Mic, Loader2, Volume2, Sparkles } from 'lucide-react'
 import { useConversation } from '@elevenlabs/react'
 import ReactMarkdown from 'react-markdown'
-import { refineTool, getToolVoiceSession, type RefineResult } from '../../lib/api'
+import { refineTool, getToolVoiceSession, askExpert, type RefineResult } from '../../lib/api'
+import { buildClientTools, getComponentSummary } from '../../lib/componentInteractions'
+import { useInteractionContext, buildPageContextSummary } from '../../lib/InteractionContext'
 
 interface ChatMessage {
   role: 'user' | 'assistant'
@@ -11,7 +13,7 @@ interface ChatMessage {
 }
 
 interface ChatSidebarProps {
-  forgeId: string
+  workspaceId: string
   chatId?: string
   activeComponentId: string | null
   activeComponentTitle?: string
@@ -23,12 +25,12 @@ interface ChatSidebarProps {
   hidden?: boolean
 }
 
-function chatStorageKey(forgeId: string, chatId?: string): string {
-  return chatId ? `chat-${forgeId}-${chatId}` : `chat-${forgeId}`
+function chatStorageKey(workspaceId: string, chatId?: string): string {
+  return chatId ? `chat-${workspaceId}-${chatId}` : `chat-${workspaceId}`
 }
 
 export default function ChatSidebar({
-  forgeId,
+  workspaceId,
   chatId,
   activeComponentId,
   activeComponentTitle,
@@ -41,7 +43,7 @@ export default function ChatSidebar({
 }: ChatSidebarProps) {
   const [isOpen, setIsOpen] = useState(false)
   const isPanel = variant === 'panel'
-  const storageKey = chatStorageKey(forgeId, chatId)
+  const storageKey = chatStorageKey(workspaceId, chatId)
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
     try {
       const raw = localStorage.getItem(storageKey)
@@ -73,75 +75,13 @@ export default function ChatSidebar({
     },
   }).current
 
-  const widgetTools = useRef({
-    toggle_checklist_items: (params: any) => {
-      const config = findComponent(params.component_id)
-      if (!config || config.type !== 'checklist') return 'Component not found'
-      const itemIds = typeof params.item_ids === 'string'
-        ? params.item_ids.split(',').map((s: string) => s.trim())
-        : params.item_ids
-      const currentChecked = new Set((config.checkedIds as string[]) || [])
-      for (const id of itemIds) {
-        if (params.checked) currentChecked.add(id)
-        else currentChecked.delete(id)
-      }
-      onComponentUpdateRef.current?.(params.component_id, { ...config, checkedIds: [...currentChecked] })
-      return `Updated ${itemIds.length} items`
-    },
-
-    answer_question: (params: any) => {
-      const config = findComponent(params.component_id)
-      if (!config || config.type !== 'question_flow') return 'Component not found'
-      const voiceAnswers = { ...((config._voiceAnswers as Record<string, unknown>) || {}), [params.question_id]: params.answer }
-      onComponentUpdateRef.current?.(params.component_id, { ...config, _voiceAnswers: voiceAnswers })
-      return `Answered question ${params.question_id}`
-    },
-
-    select_decision_option: (params: any) => {
-      const config = findComponent(params.component_id)
-      if (!config || config.type !== 'decision_tree') return 'Component not found'
-      const path = [...((config._selectedPath as any[]) || []), { nodeId: params.node_id, optionIndex: params.option_index }]
-      onComponentUpdateRef.current?.(params.component_id, { ...config, _selectedPath: path })
-      const node = (config.nodes as any[])?.find((n: any) => n.id === params.node_id)
-      const option = node?.options?.[params.option_index]
-      if (option?.recommendation) return `Recommendation: ${option.recommendation}`
-      return `Selected option ${params.option_index}`
-    },
-
-    complete_step: (params: any) => {
-      const config = findComponent(params.component_id)
-      if (!config || config.type !== 'step_by_step') return 'Component not found'
-      const currentCompleted = new Set((config.completedSteps as string[]) || [])
-      if (params.completed) currentCompleted.add(params.step_id)
-      else currentCompleted.delete(params.step_id)
-      onComponentUpdateRef.current?.(params.component_id, { ...config, completedSteps: [...currentCompleted] })
-      return `Step ${params.completed ? 'completed' : 'uncompleted'}`
-    },
-
-    set_calculator_value: (params: any) => {
-      const config = findComponent(params.component_id)
-      if (!config || config.type !== 'calculator') return 'Component not found'
-      const voiceValues = { ...((config._voiceValues as Record<string, number>) || {}), [params.input_id]: params.value }
-      onComponentUpdateRef.current?.(params.component_id, { ...config, _voiceValues: voiceValues })
-      return `Set ${params.input_id} to ${params.value}`
-    },
-
-    answer_quiz: (params: any) => {
-      const config = findComponent(params.component_id)
-      if (!config || config.type !== 'quiz') return 'Component not found'
-      const quizAnswers = { ...((config._quizAnswers as Record<string, string[]>) || {}), [params.question_id]: [params.option_id] }
-      onComponentUpdateRef.current?.(params.component_id, { ...config, _quizAnswers: quizAnswers })
-      const question = (config.questions as any[])?.find((q: any) => q.id === params.question_id)
-      const option = question?.options?.find((o: any) => o.id === params.option_id)
-      if (option?.correct) return 'Correct!'
-      return option?.explanation || 'Incorrect'
-    },
-
-    navigate_to_section: (params: any) => {
-      onNavigateRef.current?.(params.component_id)
-      return 'Navigated'
-    },
-  }).current
+  const widgetTools = useRef(
+    buildClientTools(
+      findComponent,
+      (id, config) => onComponentUpdateRef.current?.(id, config),
+      (id) => onNavigateRef.current?.(id),
+    )
+  ).current
 
   const clientTools = isPanel ? chatOnlyTools : widgetTools
 
@@ -150,7 +90,7 @@ export default function ChatSidebar({
   const handleRefine = useCallback(async (userMessage: string) => {
     try {
       const result = await refineTool(
-        forgeId,
+        workspaceId,
         userMessage,
         activeComponentId,
         layoutRef.current,
@@ -174,7 +114,7 @@ export default function ChatSidebar({
       console.error('[refine] Failed:', err)
       return null
     }
-  }, [forgeId, activeComponentId, userContext, onComponentUpdate, onNavigate])
+  }, [workspaceId, activeComponentId, userContext, onComponentUpdate, onNavigate])
 
   // ---- Voice conversation ----
 
@@ -207,68 +147,28 @@ export default function ChatSidebar({
     }
   }, [messages, storageKey])
 
+  // Read page-level interaction context for richer contextual updates
+  const interactions = useInteractionContext()
+
   // Send contextual update when active tab changes (widget only)
   useEffect(() => {
     if (isPanel || !voiceMode || conversation.status !== 'connected') return
+
+    const pageContext = buildPageContextSummary(interactions)
     const activeConfig = layout.find((c) => (c as any).id === activeComponentId) as Record<string, any> | undefined
+
     if (!activeConfig) {
-      conversation.sendContextualUpdate(
-        'User is on the Overview page. Suggest they navigate to a specific section using navigate_to_section.'
-      )
+      const msg = pageContext
+        ? `${pageContext}\nUser is on the Overview page. Suggest they navigate to a specific section using navigate_to_section.`
+        : 'User is on the Overview page. Suggest they navigate to a specific section using navigate_to_section.'
+      conversation.sendContextualUpdate(msg)
       return
     }
 
-    let detail = ''
-    switch (activeConfig.type) {
-      case 'checklist':
-        detail = `Items: ${(activeConfig.items as any[])?.map((i: any) =>
-          `${i.id}="${i.text}" ${(activeConfig.checkedIds as string[])?.includes(i.id) ? '[CHECKED]' : '[unchecked]'}`
-        ).join(', ')}`
-        break
-      case 'question_flow':
-        detail = `Questions: ${(activeConfig.questions as any[])?.map((q: any) =>
-          `${q.id}="${q.text}" (${q.inputType}${q.options ? ': ' + q.options.join('/') : ''})`
-        ).join('; ')}`
-        break
-      case 'decision_tree':
-        detail = `Nodes: ${(activeConfig.nodes as any[])?.map((n: any) =>
-          `${n.id}="${n.question}" [${(n.options as any[])?.map((o: any, i: number) => `${i}:"${o.label}"`).join(', ')}]`
-        ).join('; ')}`
-        break
-      case 'step_by_step':
-        detail = `Steps: ${(activeConfig.steps as any[])?.map((s: any) =>
-          `${s.id}="${s.title}" ${(activeConfig.completedSteps as string[])?.includes(s.id) ? '[DONE]' : '[pending]'}`
-        ).join(', ')}`
-        break
-      case 'calculator':
-        detail = `Inputs: ${(activeConfig.inputs as any[])?.map((i: any) =>
-          `${i.id}="${i.label}" (${i.type})`
-        ).join(', ')}`
-        break
-      case 'quiz':
-        detail = `Questions: ${(activeConfig.questions as any[])?.map((q: any) =>
-          `${q.id}="${q.text}" [${(q.options as any[])?.map((o: any) => `${o.id}:"${o.text}"${o.correct ? '(correct)' : ''}`).join(', ')}]`
-        ).join('; ')}`
-        break
-      case 'info_card':
-        detail = `Variant: ${activeConfig.variant}. Content: ${activeConfig.content}${activeConfig.details ? ` Details: ${activeConfig.details}` : ''}`
-        break
-      case 'custom':
-        detail = `Sections: ${(activeConfig.sections as any[])?.map((s: any) =>
-          `"${s.heading}" (${s.variant})${s.content ? `: ${s.content.slice(0, 100)}` : ''}${s.items ? `: ${s.items.slice(0, 5).join(', ')}` : ''}`
-        ).join('; ')}`
-        break
-      case 'task_board':
-        detail = `Tasks: ${(activeConfig.tasks as any[])?.map((t: any) =>
-          `"${t.text}" (${t.frequency})${t.category ? ` [${t.category}]` : ''}`
-        ).join(', ')}`
-        break
-    }
-
-    conversation.sendContextualUpdate(
-      `User is now viewing "${activeConfig.title}" (${activeConfig.type}). Component ID: ${activeConfig.id}. ${detail}. Use client tools to update this component.`
-    )
-  }, [activeComponentTitle, activeComponentId, voiceMode, conversation.status])
+    const detail = getComponentSummary(activeConfig)
+    const base = `User is now viewing "${activeConfig.title}" (${activeConfig.type}). Component ID: ${activeConfig.id}. ${detail}. Use client tools to update this component.`
+    conversation.sendContextualUpdate(pageContext ? `${pageContext}\n${base}` : base)
+  }, [activeComponentTitle, activeComponentId, voiceMode, conversation.status, interactions])
 
   // ---- Actions ----
 
@@ -308,7 +208,7 @@ export default function ChatSidebar({
 
     setVoiceLoading(true)
     try {
-      const session = await getToolVoiceSession(forgeId, isPanel ? 'chat' : 'widget')
+      const session = await getToolVoiceSession(workspaceId, isPanel ? 'chat' : 'widget')
       await conversation.startSession({
         agentId: session.agentId,
         connectionType: "websocket" as const,

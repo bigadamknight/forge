@@ -18,12 +18,32 @@ import type {
   InterviewDepth,
 } from "@forge/shared"
 
-// ============ Forges ============
+// ============ Workspaces ============
+
+export const workspaces = pgTable(
+  "workspaces",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    description: text("description"),
+    toolConfig: jsonb("tool_config").$type<ToolConfig>(),
+    knowledgeBase: jsonb("knowledge_base").$type<KnowledgeBase>(),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("idx_workspaces_created").on(table.createdAt)]
+)
+
+// ============ Forges (Interviews) ============
 
 export const forges = pgTable(
   "forges",
   {
     id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     title: text("title").notNull(),
     expertName: text("expert_name"),
     expertBio: text("expert_bio"),
@@ -35,15 +55,16 @@ export const forges = pgTable(
       .default("draft")
       .notNull(),
     interviewConfig: jsonb("interview_config").$type<InterviewConfig>(),
-    toolConfig: jsonb("tool_config").$type<ToolConfig>(),
-    knowledgeBase: jsonb("knowledge_base").$type<KnowledgeBase>(),
     depth: text("depth").$type<InterviewDepth>().default("standard").notNull(),
     metadata: jsonb("metadata"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
     completedAt: timestamp("completed_at", { withTimezone: true }),
   },
-  (table) => [index("idx_forges_status").on(table.status)]
+  (table) => [
+    index("idx_forges_status").on(table.status),
+    index("idx_forges_workspace").on(table.workspaceId),
+  ]
 )
 
 // ============ Interview Sections ============
@@ -127,19 +148,7 @@ export const extractions = pgTable(
     questionId: uuid("question_id").references(() => interviewQuestions.id, {
       onDelete: "set null",
     }),
-    type: text("type", {
-      enum: [
-        "fact",
-        "procedure",
-        "decision_rule",
-        "warning",
-        "tip",
-        "metric",
-        "definition",
-        "example",
-        "context",
-      ],
-    }).notNull(),
+    type: text("type").notNull(),
     content: text("content").notNull(),
     structured: jsonb("structured"),
     confidence: real("confidence").default(0.8),
@@ -153,22 +162,76 @@ export const extractions = pgTable(
   ]
 )
 
+// ============ Knowledge Units (curated workspace knowledge layer) ============
+
+export const knowledgeUnits = pgTable(
+  "knowledge_units",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    // provenance chain: extraction → question → section → forge
+    extractionId: uuid("extraction_id").references(() => extractions.id, {
+      onDelete: "set null",
+    }),
+    documentId: uuid("document_id").references(() => documents.id, {
+      onDelete: "set null",
+    }),
+    type: text("type").notNull(),
+    content: text("content").notNull(),
+    structured: jsonb("structured"),
+    confidence: real("confidence"),
+    tags: jsonb("tags").$type<string[]>(),
+    status: text("status", {
+      enum: ["proposed", "approved", "superseded", "rejected"],
+    })
+      .default("proposed")
+      .notNull(),
+    supersededBy: uuid("superseded_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_ku_workspace").on(table.workspaceId),
+    index("idx_ku_status").on(table.status),
+    index("idx_ku_type").on(table.type),
+  ]
+)
+
 // ============ Documents ============
 
 export const documents = pgTable(
   "documents",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    forgeId: uuid("forge_id")
+    workspaceId: uuid("workspace_id")
       .notNull()
-      .references(() => forges.id, { onDelete: "cascade" }),
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     type: text("type", { enum: ["text", "url"] }).notNull(),
     title: text("title").notNull(),
     content: text("content").notNull(),
     extractedContent: text("extracted_content"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index("idx_documents_forge").on(table.forgeId)]
+  (table) => [index("idx_documents_workspace").on(table.workspaceId)]
+)
+
+// ============ Tool Advice (persisted personalized advice) ============
+
+export const toolAdvice = pgTable(
+  "tool_advice",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    question: text("question").notNull(),
+    userContext: jsonb("user_context"),
+    sections: jsonb("sections").$type<Array<{ title: string; description: string; content: string }>>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("idx_tool_advice_workspace").on(table.workspaceId)]
 )
 
 // ============ Tool Sessions ============
@@ -177,14 +240,14 @@ export const toolSessions = pgTable(
   "tool_sessions",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    forgeId: uuid("forge_id")
+    workspaceId: uuid("workspace_id")
       .notNull()
-      .references(() => forges.id, { onDelete: "cascade" }),
+      .references(() => workspaces.id, { onDelete: "cascade" }),
     userContext: jsonb("user_context"),
     toolState: jsonb("tool_state"),
     result: jsonb("result"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (table) => [index("idx_tool_sessions_forge").on(table.forgeId)]
+  (table) => [index("idx_tool_sessions_workspace").on(table.workspaceId)]
 )

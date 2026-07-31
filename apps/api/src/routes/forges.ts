@@ -44,12 +44,18 @@ app.post("/", async (c) => {
   const body = await c.req.json()
   const { title, expertName, expertBio, domain, targetAudience, depth, draft } = body
 
+  const { workspaceId } = body
+
   // Draft mode: create minimal forge for intro conversation
   if (draft) {
+    if (!workspaceId) {
+      return c.json({ error: "workspaceId is required" }, 400)
+    }
     const [forge] = await db
       .insert(forges)
       .values({
-        title: "New Forge",
+        workspaceId,
+        title: "New Interview",
         status: "draft",
         metadata: { introMessages: [], introExtracted: {} },
       })
@@ -57,13 +63,14 @@ app.post("/", async (c) => {
     return c.json(forge, 201)
   }
 
-  if (!title || !expertName || !domain) {
-    return c.json({ error: "title, expertName, and domain are required" }, 400)
+  if (!workspaceId || !title || !expertName || !domain) {
+    return c.json({ error: "workspaceId, title, expertName, and domain are required" }, 400)
   }
 
   const [forge] = await db
     .insert(forges)
     .values({
+      workspaceId,
       title,
       expertName,
       expertBio,

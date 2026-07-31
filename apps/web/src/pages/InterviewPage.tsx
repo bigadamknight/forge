@@ -1,16 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Flame, Loader2, CheckCircle2, Mic, MessageSquare, Sparkles, ArrowRight } from 'lucide-react'
 import { useInterview } from '../hooks/useInterview'
 import { useIntro } from '../hooks/useIntro'
 import type { PlanningState } from '../hooks/usePlanningAnimation'
-import { getVoiceSession, getIntroVoiceSession, saveIntroVoiceMessage, extractIntroVoiceMessage, seedExtractions, startFollowUpStream, completeIntro, planInterviewStream, type PlanInterviewEvent } from '../lib/api'
+import { getVoiceSession, getIntroVoiceSession, saveIntroVoiceMessage, extractIntroVoiceMessage, seedExtractions, startFollowUpStream, getWorkspace, type PlanInterviewEvent } from '../lib/api'
+import { countCaptured } from '../lib/profileFields'
+import { useRegisterInteraction } from '../lib/InteractionContext'
+import { INTERVIEW_PAGE_INTRO, INTERVIEW_PAGE_ACTIVE } from '../lib/pageInteractions'
 import ChatPanel from '../components/interview/ChatPanel'
 import VoicePanel from '../components/interview/VoicePanel'
 import ExtractionPanel from '../components/interview/ExtractionPanel'
 import AgendaTracker from '../components/interview/AgendaTracker'
-import IntroAgenda from '../components/interview/IntroAgenda'
+import ProfileCard from '../components/interview/ProfileCard'
 import InterviewPlanningAnimation from '../components/InterviewPlanningAnimation'
 import DevTools from '../components/DevTools'
 
@@ -30,7 +33,7 @@ const EMPTY_PLANNING_STATE: PlanningState = {
 }
 
 export default function InterviewPage() {
-  const { forgeId } = useParams<{ forgeId: string }>()
+  const { workspaceId, forgeId } = useParams<{ workspaceId: string; forgeId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [searchParams] = useSearchParams()
@@ -135,10 +138,25 @@ export default function InterviewPage() {
 
   const intro = useIntro(forgeId!, state)
   const isIntroPhase = state?.forge?.status === 'draft'
-  const [introPlanning, setIntroPlanning] = useState(false)
-  const [introPlanState, setIntroPlanState] = useState<PlanningState>(EMPTY_PLANNING_STATE)
-  const [introDepth, setIntroDepth] = useState<'quick' | 'standard' | 'deep'>('standard')
-  const [introMode, setIntroMode] = useState<'choosing' | 'voice' | 'text'>('choosing')
+
+  const { data: wsData } = useQuery({
+    queryKey: ['workspace', workspaceId],
+    queryFn: () => getWorkspace(workspaceId!),
+    enabled: !!workspaceId,
+  })
+  const customExtractionTypes = ((wsData?.metadata as Record<string, unknown>)?.customExtractionTypes ?? []) as import('../lib/extractionTypes').CustomExtractionType[]
+
+  // Register page interaction context
+  const interactionDescriptor = isIntroPhase ? INTERVIEW_PAGE_INTRO : INTERVIEW_PAGE_ACTIVE
+  const { updateState: updatePageState } = useRegisterInteraction(
+    `page:interview:${forgeId}`,
+    interactionDescriptor,
+    { mode: 'choosing' },
+  )
+  const modeParam = searchParams.get('mode')
+  const [introMode, setIntroMode] = useState<'choosing' | 'voice' | 'text'>(
+    modeParam === 'voice' ? 'voice' : modeParam === 'text' ? 'text' : 'choosing'
+  )
   const [introVoiceSession, setIntroVoiceSession] = useState<{
     agentId: string
     prompt: string
@@ -154,86 +172,30 @@ export default function InterviewPage() {
     },
   })
 
+  // Auto-start voice session when mode=voice from query param
+  const introVoiceAutoRef = useRef(false)
+  useEffect(() => {
+    if (modeParam === 'voice' && isIntroPhase && !introVoiceSession && !introVoiceAutoRef.current) {
+      introVoiceAutoRef.current = true
+      introVoiceMutation.mutate()
+    }
+  }, [modeParam, isIntroPhase])
+
   // Refresh intro extracted fields from server after voice messages
   const refreshIntroFields = useCallback(() => {
     queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
   }, [forgeId, queryClient])
 
-  // Sync intro extracted fields from server state (for voice mode)
+  // Sync intro profile from server state (for voice mode)
   useEffect(() => {
     if (!isIntroPhase) return
     const metadata = (state?.forge?.metadata as any) || {}
-    const extracted = metadata.introExtracted
-    if (extracted && (extracted.expertName || extracted.domain || extracted.targetAudience)) {
-      intro.syncExtractedFields(extracted)
+    const serverProfile = metadata.introProfile
+    if (serverProfile && (serverProfile.expertName || serverProfile.domain || serverProfile.targetAudience)) {
+      intro.syncProfile(serverProfile)
     }
   }, [state?.forge?.updatedAt])
 
-  const handlePlanInterview = async () => {
-    if (!forgeId) return
-    setIntroPlanning(true)
-    setIntroPlanState(EMPTY_PLANNING_STATE)
-
-    await completeIntro(forgeId, introDepth)
-
-    planInterviewStream(
-      forgeId,
-      (event: PlanInterviewEvent) => {
-        switch (event.type) {
-          case 'analysing':
-            setIntroPlanState((s) => ({ ...s, stage: 'analysing' }))
-            break
-          case 'skeleton':
-            setIntroPlanState((s) => ({
-              ...s,
-              stage: 'sections',
-              domainContext: event.domainContext,
-              extractionPriorities: event.extractionPriorities,
-              estimatedDuration: event.estimatedDurationMinutes,
-              sections: event.sections.map((sec) => ({
-                index: sec.index,
-                title: sec.title,
-                goal: sec.goal,
-                questions: [],
-                questionsReady: false,
-              })),
-            }))
-            break
-          case 'questions':
-            setIntroPlanState((s) => {
-              const sections = s.sections.map((sec) =>
-                sec.index === event.sectionIndex
-                  ? { ...sec, questions: event.questions, questionsReady: true }
-                  : sec
-              )
-              const readyCount = sections.filter((sec) => sec.questionsReady).length
-              const allReady = readyCount === sections.length
-              return {
-                ...s,
-                stage: allReady ? 'saving' : 'questions',
-                sections,
-                sectionsWithQuestions: readyCount,
-              }
-            })
-            break
-          case 'complete':
-            setIntroPlanState((s) => ({ ...s, stage: 'complete', forgeId: event.forgeId }))
-            setTimeout(() => {
-              setIntroPlanning(false)
-              queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
-            }, 1200)
-            break
-          case 'error':
-            setIntroPlanState((s) => ({ ...s, stage: 'error', errorMessage: event.message }))
-            break
-        }
-      },
-      () => {},
-      (error) => {
-        setIntroPlanState((s) => ({ ...s, stage: 'error', errorMessage: error }))
-      }
-    )
-  }
 
   // Auto-resume: if there's already a voice transcript, go straight to voice mode
   const hasVoiceTranscript = !!(state?.forge?.metadata as any)?.voiceTranscript?.length
@@ -267,6 +229,27 @@ export default function InterviewPage() {
 
   const totalExtractions = (state?.extractions.length ?? 0) + liveExtractions.length
 
+  // Sync interaction context state
+  useEffect(() => {
+    if (isIntroPhase) {
+      updatePageState({
+        mode: introMode,
+        expertName: intro.profile.expertName,
+        profileFieldCount: countCaptured(intro.profile),
+        profileReady: intro.profileReady,
+      })
+    } else {
+      updatePageState({
+        mode: effectiveMode,
+        expertName: state?.forge?.expertName,
+        currentSection: activeSection?.title,
+        currentQuestion: activeQuestion?.text,
+        extractionCount: totalExtractions,
+        interviewComplete,
+      })
+    }
+  }, [introMode, effectiveMode, intro.profileReady, activeSection?.title, activeQuestion?.text, totalExtractions, interviewComplete])
+
   // Build resume context for voice mode
   const resumeContext = (() => {
     if (!state) return null
@@ -290,7 +273,7 @@ export default function InterviewPage() {
   if (followUpPlanning && followUpTopic) {
     return (
       <div className="max-w-2xl mx-auto p-8">
-        <Link to={`/forge/${forgeId}/tool`} className="flex items-center gap-2 text-slate-400 hover:text-white mb-8 transition-colors">
+        <Link to={`/workspace/${workspaceId}`} className="flex items-center gap-2 text-slate-400 hover:text-white mb-8 transition-colors">
           <ArrowLeft className="w-4 h-4" />
           Back to Tool
         </Link>
@@ -322,7 +305,7 @@ export default function InterviewPage() {
       <div className="h-screen flex items-center justify-center">
         <div className="text-center">
           <p className="text-red-400 mb-4">{error.message}</p>
-          <Link to="/forges" className="text-orange-400 hover:text-orange-300">
+          <Link to="/workspaces" className="text-orange-400 hover:text-orange-300">
             Back to Home
           </Link>
         </div>
@@ -334,27 +317,6 @@ export default function InterviewPage() {
 
   // ============ Intro Phase ============
   if (isIntroPhase) {
-    if (introPlanning) {
-      return (
-        <div className="max-w-2xl mx-auto p-8">
-          <Link to="/forges" className="flex items-center gap-2 text-slate-400 hover:text-white mb-8 transition-colors">
-            <ArrowLeft className="w-4 h-4" />
-            Back to Home
-          </Link>
-          <div className="mb-6">
-            <h2 className="text-lg font-semibold text-white mb-1">Planning Your Interview</h2>
-            <p className="text-slate-400 text-sm">
-              Building a custom interview for {intro.extractedFields.expertName} about {intro.extractedFields.domain}
-            </p>
-          </div>
-          <InterviewPlanningAnimation state={introPlanState} onRetry={() => {
-            setIntroPlanning(false)
-            setIntroPlanState(EMPTY_PLANNING_STATE)
-          }} />
-        </div>
-      )
-    }
-
     // Intro mode selection
     if (introMode === 'choosing') {
       return (
@@ -396,8 +358,8 @@ export default function InterviewPage() {
               </p>
             )}
             <div className="mt-6">
-              <Link to="/forges" className="text-slate-500 hover:text-slate-300 text-sm">
-                Back to Home
+              <Link to={`/workspace/${workspaceId}`} className="text-slate-500 hover:text-slate-300 text-sm">
+                Back to Workspace
               </Link>
             </div>
           </div>
@@ -409,12 +371,12 @@ export default function InterviewPage() {
       <div className="h-screen flex flex-col">
         {/* Header */}
         <header className="flex items-center gap-4 px-6 py-3 border-b border-slate-700/50 bg-slate-900/80 backdrop-blur-sm shrink-0">
-          <Link to="/forges" className="text-slate-400 hover:text-white transition-colors">
+          <Link to={`/workspace/${workspaceId}`} className="text-slate-400 hover:text-white transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </Link>
           <div className="flex items-center gap-2">
             <Flame className="w-5 h-5 text-orange-400" />
-            <span className="font-medium">New Forge</span>
+            <span className="font-medium">Expert Profile</span>
           </div>
           {introMode === 'voice' && (
             <div className="ml-auto flex items-center gap-1.5 text-xs text-green-400">
@@ -437,7 +399,7 @@ export default function InterviewPage() {
                   progress: introVoiceSession.progress,
                 }}
                 forgeId={forgeId!}
-                expertName={intro.extractedFields.expertName || 'You'}
+                expertName={intro.profile.expertName || 'You'}
                 resumeContext={null}
                 onMessage={() => { refreshIntroFields() }}
                 onExtraction={() => {}}
@@ -451,7 +413,7 @@ export default function InterviewPage() {
                 streamingContent={intro.streamingContent}
                 isStreaming={intro.isStreaming}
                 currentQuestion={null}
-                expertName={intro.extractedFields.expertName || 'You'}
+                expertName={intro.profile.expertName || 'You'}
                 onSendMessage={intro.handleSendMessage}
                 inputPlaceholder="Tell me about yourself..."
               />
@@ -461,35 +423,27 @@ export default function InterviewPage() {
           {/* Right panel (40%) - Intro Agenda */}
           <div className="w-[40%] flex flex-col bg-slate-850">
             <div className="p-4 border-b border-slate-700/50 shrink-0">
-              <IntroAgenda fields={intro.extractedFields} />
+              <ProfileCard profile={intro.profile} />
             </div>
             <div className="flex-1" />
-            {intro.allFieldsCaptured && (
+            {intro.profileReady && (
               <div className="p-4 border-t border-slate-700/50 space-y-3">
-                <div className="flex items-center gap-2">
-                  <label className="text-xs text-slate-400">Depth:</label>
-                  <div className="flex gap-1">
-                    {(['quick', 'standard', 'deep'] as const).map((d) => (
-                      <button
-                        key={d}
-                        onClick={() => setIntroDepth(d)}
-                        className={`px-3 py-1 text-xs transition-colors ${
-                          introDepth === d
-                            ? 'bg-orange-600 text-white'
-                            : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
-                        }`}
-                      >
-                        {d}
-                      </button>
-                    ))}
-                  </div>
+                <div className="flex items-center gap-2 text-green-400">
+                  <CheckCircle2 className="w-5 h-5" />
+                  <span className="text-sm font-medium">Profile Complete</span>
                 </div>
+                <p className="text-xs text-slate-400">
+                  {intro.profile.expertName} — {intro.profile.domain} — {intro.profile.targetAudience}
+                  {countCaptured(intro.profile) > 3 && (
+                    <span className="text-slate-500"> + {countCaptured(intro.profile) - 3} additional details captured</span>
+                  )}
+                </p>
                 <button
-                  onClick={handlePlanInterview}
+                  onClick={() => navigate(`/workspace/${workspaceId}`)}
                   className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-white font-medium transition-colors text-sm"
                 >
-                  <ArrowRight className="w-4 h-4" />
-                  Plan Interview
+                  <ArrowLeft className="w-4 h-4" />
+                  Back to Workspace
                 </button>
               </div>
             )}
@@ -501,23 +455,23 @@ export default function InterviewPage() {
 
   const devActions = [
     {
-      label: 'Seed Extractions',
+      label: 'Seed Knowledge',
       fn: async () => {
         const result = await seedExtractions(forgeId!)
         queryClient.invalidateQueries({ queryKey: ['interview', forgeId] })
-        console.log(`Seeded ${result.seeded} extractions`)
+        console.log(`Seeded ${result.seeded} knowledge items`)
       },
     },
     {
       label: 'Seed + Skip to Tool',
       fn: async () => {
         await seedExtractions(forgeId!)
-        navigate(`/forge/${forgeId}/tool`)
+        navigate(`/workspace/${workspaceId}`)
       },
     },
     {
       label: 'Skip to Tool (no seed)',
-      fn: () => navigate(`/forge/${forgeId}/tool`),
+      fn: () => navigate(`/workspace/${workspaceId}`),
     },
   ]
 
@@ -531,26 +485,17 @@ export default function InterviewPage() {
             {isFollowUp ? 'Follow-up Complete' : 'Interview Complete'}
           </h2>
           <p className="text-slate-400 mb-6">
-            We've captured {totalExtractions} pieces of knowledge from {state.forge.expertName!}.
+            We've distilled {totalExtractions} pieces of knowledge from {state.forge.expertName!}.
           </p>
           <button
-            onClick={() => navigate(`/forge/${forgeId}/tool`)}
+            onClick={() => navigate(`/workspace/${workspaceId}`)}
             className="px-6 py-3 bg-orange-600 hover:bg-orange-700  transition-colors font-medium inline-flex items-center gap-2"
           >
-            {isFollowUp ? (
-              <>
-                <ArrowRight className="w-5 h-5" />
-                Back to Tool
-              </>
-            ) : (
-              <>
-                <Sparkles className="w-5 h-5" />
-                Generate Interactive Tool
-              </>
-            )}
+            <ArrowRight className="w-5 h-5" />
+            Back to Workspace
           </button>
           <div className="mt-4">
-            <Link to="/forges" className="text-slate-500 hover:text-slate-300 text-sm">
+            <Link to="/workspaces" className="text-slate-500 hover:text-slate-300 text-sm">
               Back to Home
             </Link>
           </div>
@@ -601,7 +546,7 @@ export default function InterviewPage() {
             </p>
           )}
           <div className="mt-6">
-            <Link to="/forges" className="text-slate-500 hover:text-slate-300 text-sm">
+            <Link to="/workspaces" className="text-slate-500 hover:text-slate-300 text-sm">
               Back to Home
             </Link>
           </div>
@@ -615,7 +560,7 @@ export default function InterviewPage() {
       <DevTools actions={devActions} />
       {/* Header */}
       <header className="flex items-center gap-4 px-6 py-3 border-b border-slate-700/50 bg-slate-900/80 backdrop-blur-sm shrink-0">
-        <Link to="/forges" className="text-slate-400 hover:text-white transition-colors">
+        <Link to="/workspaces" className="text-slate-400 hover:text-white transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </Link>
         <div className="flex items-center gap-2">
@@ -670,7 +615,7 @@ export default function InterviewPage() {
           )}
         </div>
 
-        {/* Right panel - Extractions + Agenda (40%) */}
+        {/* Right panel - Knowledge + Agenda (40%) */}
         <div className="w-[40%] flex flex-col bg-slate-850">
           <div className="p-4 border-b border-slate-700/50 shrink-0 max-h-[40%] overflow-y-auto">
             <AgendaTracker sections={state.sections.filter((s) => (s.round ?? 1) === currentRound)} />
@@ -679,6 +624,7 @@ export default function InterviewPage() {
             <ExtractionPanel
               extractions={state.extractions}
               liveExtractions={liveExtractions}
+              customExtractionTypes={customExtractionTypes}
             />
           </div>
           <div className="p-4 border-t border-slate-700/50">

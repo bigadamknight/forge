@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from 'react'
-import { createForge, planInterviewStream, getPlanningNodes, type PlanInterviewEvent } from '../lib/api'
+import { createWorkspace, planInterviewStream, getPlanningNodes, type PlanInterviewEvent } from '../lib/api'
 
 export type PlanningStage = 'form' | 'creating' | 'analysing' | 'sections' | 'questions' | 'saving' | 'complete' | 'error'
 
@@ -113,16 +113,9 @@ export function usePlanningAnimation(onComplete: (forgeId: string) => void) {
     })
 
     try {
-      // Fire planning text and forge creation in parallel
-      const [forge] = await Promise.all([
-        createForge({
-          title: `${formData.domain} - ${formData.expertName}`,
-          expertName: formData.expertName,
-          expertBio: formData.expertBio,
-          domain: formData.domain,
-          targetAudience: formData.targetAudience,
-          depth: formData.depth,
-        }),
+      // Fire planning text and workspace creation in parallel
+      const [{ interview: forge }] = await Promise.all([
+        createWorkspace(`${formData.domain} - ${formData.expertName}`),
         getPlanningNodes({
           expertName: formData.expertName,
           domain: formData.domain,

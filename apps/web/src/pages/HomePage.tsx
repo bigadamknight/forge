@@ -2,7 +2,9 @@ import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Plus, Flame, ArrowRight, Trash2 } from 'lucide-react'
-import { getForges, deleteForge, type Forge } from '../lib/api'
+import { getWorkspaces, deleteWorkspace, type Workspace } from '../lib/api'
+import { useRegisterInteraction } from '../lib/InteractionContext'
+import { HOME_PAGE } from '../lib/pageInteractions'
 
 const STATUS_COLORS: Record<string, string> = {
   draft: 'bg-slate-500/20 text-slate-400',
@@ -16,18 +18,24 @@ const STATUS_COLORS: Record<string, string> = {
 
 export default function HomePage() {
   const queryClient = useQueryClient()
-  const [deleteTarget, setDeleteTarget] = useState<Forge | null>(null)
+  const [deleteTarget, setDeleteTarget] = useState<Workspace | null>(null)
   const [deleteConfirmText, setDeleteConfirmText] = useState('')
 
-  const { data: forges, isLoading } = useQuery({
-    queryKey: ['forges'],
-    queryFn: getForges,
+  const { data: workspaces, isLoading } = useQuery({
+    queryKey: ['workspaces'],
+    queryFn: getWorkspaces,
   })
 
+  const { updateState: updatePageState } = useRegisterInteraction('page:home', HOME_PAGE, {
+    workspaceCount: 0, isLoading: true,
+  })
+  // Keep page state in sync
+  if (workspaces) updatePageState({ workspaceCount: workspaces.length, isLoading: false })
+
   const deleteMutation = useMutation({
-    mutationFn: deleteForge,
+    mutationFn: deleteWorkspace,
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['forges'] })
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] })
       setDeleteTarget(null)
       setDeleteConfirmText('')
     },
@@ -52,39 +60,39 @@ export default function HomePage() {
           </div>
         </div>
         <Link
-          to="/forge/new"
+          to="/workspace/new"
           className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700  transition-colors font-medium"
         >
           <Plus className="w-4 h-4" />
-          New Forge
+          New Workspace
         </Link>
       </div>
 
-      {/* Forge List */}
+      {/* Workspace List */}
       {isLoading ? (
         <div className="text-slate-400 text-center py-12">Loading...</div>
-      ) : !forges || forges.length === 0 ? (
+      ) : !workspaces || workspaces.length === 0 ? (
         <div className="text-center py-16">
           <Flame className="w-16 h-16 mx-auto mb-4 text-slate-600" />
-          <h2 className="text-xl font-medium text-slate-400 mb-2">No forges yet</h2>
+          <h2 className="text-xl font-medium text-slate-400 mb-2">No workspaces yet</h2>
           <p className="text-slate-500 mb-6">
-            Create your first forge to capture expert knowledge and turn it into an interactive tool.
+            Create your first workspace to capture expert knowledge and turn it into an interactive tool.
           </p>
           <Link
-            to="/forge/new"
+            to="/workspace/new"
             className="inline-flex items-center gap-2 px-6 py-3 bg-orange-600 hover:bg-orange-700  transition-colors font-medium"
           >
             <Plus className="w-5 h-5" />
-            Create Your First Forge
+            Create Your First Workspace
           </Link>
         </div>
       ) : (
         <div className="space-y-3">
-          {forges.map((forge) => (
-            <ForgeCard
-              key={forge.id}
-              forge={forge}
-              onDelete={() => { setDeleteTarget(forge); setDeleteConfirmText('') }}
+          {workspaces.map((ws) => (
+            <WorkspaceCard
+              key={ws.id}
+              workspace={ws}
+              onDelete={() => { setDeleteTarget(ws); setDeleteConfirmText('') }}
             />
           ))}
         </div>
@@ -99,16 +107,18 @@ export default function HomePage() {
                 <Trash2 className="w-5 h-5 text-red-400" />
               </div>
               <div>
-                <h3 className="text-lg font-semibold text-white">Delete Forge</h3>
+                <h3 className="text-lg font-semibold text-white">Delete Workspace</h3>
                 <p className="text-sm text-slate-400">This action cannot be undone</p>
               </div>
             </div>
             <p className="text-sm text-slate-300 mb-1">
-              This will permanently delete <span className="font-medium text-white">{deleteTarget.title}</span> including all interview data, extractions, and generated tools.
+              This will permanently delete <span className="font-medium text-white">{deleteTarget.title}</span> including all interviews, knowledge, documents, and generated tools.
             </p>
-            <p className="text-xs text-slate-500 mb-4">
-              {deleteTarget.expertName} &middot; {deleteTarget.domain}
-            </p>
+            {deleteTarget.expertName && deleteTarget.domain && (
+              <p className="text-xs text-slate-500 mb-4">
+                {deleteTarget.expertName} &middot; {deleteTarget.domain}
+              </p>
+            )}
             <div className="mb-4">
               <label className="text-xs text-slate-500 block mb-1.5">
                 Type <span className="text-red-400 font-mono font-medium">delete</span> to confirm
@@ -149,12 +159,15 @@ export default function HomePage() {
   )
 }
 
-function ForgeCard({ forge, onDelete }: { forge: Forge; onDelete: () => void }) {
-  const statusStyle = STATUS_COLORS[forge.status] || STATUS_COLORS.draft
+function WorkspaceCard({ workspace, onDelete }: { workspace: Workspace; onDelete: () => void }) {
+  const status = workspace.latestStatus || 'draft'
+  const statusStyle = STATUS_COLORS[status] || STATUS_COLORS.draft
 
-  const link = forge.status === 'complete'
-    ? `/forge/${forge.id}/tool`
-    : `/forge/${forge.id}/interview`
+  const link = status === 'complete'
+    ? `/workspace/${workspace.id}`
+    : `/workspace/${workspace.id}`
+
+  const interviewCount = workspace.interviewCount ?? 0
 
   return (
     <div className="bg-slate-800  p-4 hover:bg-slate-750 transition-colors group">
@@ -165,14 +178,15 @@ function ForgeCard({ forge, onDelete }: { forge: Forge; onDelete: () => void }) 
 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
-            <h3 className="font-medium truncate">{forge.title}</h3>
+            <h3 className="font-medium truncate">{workspace.title}</h3>
             <span className={`px-2 py-0.5 text-xs ${statusStyle}`}>
-              {forge.status}
+              {status}
             </span>
           </div>
           <p className="text-sm text-slate-400">
-            {forge.expertName} &middot; {forge.domain}
-            {forge.targetAudience && ` &middot; For: ${forge.targetAudience}`}
+            {workspace.expertName && <>{workspace.expertName} &middot; </>}
+            {workspace.domain && <>{workspace.domain} &middot; </>}
+            {interviewCount} interview{interviewCount !== 1 ? 's' : ''}
           </p>
         </div>
 

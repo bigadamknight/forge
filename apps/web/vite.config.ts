@@ -6,7 +6,18 @@ export default defineConfig({
   server: {
     port: 3070,
     proxy: {
-      '/api': 'http://localhost:3071',
+      '/api': {
+        target: 'http://localhost:3071',
+        // Disable buffering so SSE streams token-by-token
+        configure: (proxy) => {
+          proxy.on('proxyRes', (proxyRes) => {
+            if (proxyRes.headers['content-type']?.includes('text/event-stream')) {
+              proxyRes.headers['cache-control'] = 'no-cache'
+              proxyRes.headers['x-accel-buffering'] = 'no'
+            }
+          })
+        },
+      },
     },
   },
 })

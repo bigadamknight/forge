@@ -4,10 +4,10 @@ import { FileText, Link as LinkIcon, Plus, X, Loader2, Globe, Pencil, Check, Che
 import { getDocuments, addDocument, deleteDocument, updateDocument } from '../../lib/api'
 
 interface DocumentsPanelProps {
-  forgeId: string
+  workspaceId: string
 }
 
-export default function DocumentsPanel({ forgeId }: DocumentsPanelProps) {
+export default function DocumentsPanel({ workspaceId }: DocumentsPanelProps) {
   const queryClient = useQueryClient()
   const [inputMode, setInputMode] = useState<'text' | 'url'>('text')
   const [title, setTitle] = useState('')
@@ -21,14 +21,14 @@ export default function DocumentsPanel({ forgeId }: DocumentsPanelProps) {
   const [expandedId, setExpandedId] = useState<string | null>(null)
 
   const { data: docs = [], isLoading } = useQuery({
-    queryKey: ['documents', forgeId],
-    queryFn: () => getDocuments(forgeId),
+    queryKey: ['documents', workspaceId],
+    queryFn: () => getDocuments(workspaceId),
   })
 
   const addMutation = useMutation({
-    mutationFn: () => addDocument(forgeId, { type: inputMode, title, content }),
+    mutationFn: () => addDocument(workspaceId, { type: inputMode, title, content }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents', forgeId] })
+      queryClient.invalidateQueries({ queryKey: ['documents', workspaceId] })
       setTitle('')
       setContent('')
     },
@@ -36,9 +36,9 @@ export default function DocumentsPanel({ forgeId }: DocumentsPanelProps) {
 
   const updateMutation = useMutation({
     mutationFn: ({ docId, data }: { docId: string; data: { title?: string; content?: string } }) =>
-      updateDocument(forgeId, docId, data),
+      updateDocument(workspaceId, docId, data),
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['documents', forgeId] })
+      queryClient.invalidateQueries({ queryKey: ['documents', workspaceId] })
       setSavedId(variables.docId)
       setEditingId(null)
       setTimeout(() => setSavedId(null), 2000)
@@ -46,9 +46,9 @@ export default function DocumentsPanel({ forgeId }: DocumentsPanelProps) {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (docId: string) => deleteDocument(forgeId, docId),
+    mutationFn: (docId: string) => deleteDocument(workspaceId, docId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents', forgeId] })
+      queryClient.invalidateQueries({ queryKey: ['documents', workspaceId] })
     },
   })
 

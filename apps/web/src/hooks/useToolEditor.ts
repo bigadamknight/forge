@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { updateToolConfig } from '../lib/api'
 
-export function useToolEditor(forgeId: string, originalLayout: Array<Record<string, unknown>>) {
+export function useToolEditor(workspaceId: string, originalLayout: Array<Record<string, unknown>>) {
   const queryClient = useQueryClient()
   const [editMode, setEditMode] = useState(false)
   const [editableLayout, setEditableLayout] = useState(originalLayout)
@@ -30,9 +30,9 @@ export function useToolEditor(forgeId: string, originalLayout: Array<Record<stri
   const handleSave = async () => {
     setIsSaving(true)
     try {
-      await updateToolConfig(forgeId, editableLayout)
+      await updateToolConfig(workspaceId, editableLayout)
       originalRef.current = editableLayout
-      queryClient.invalidateQueries({ queryKey: ['tool', forgeId] })
+      queryClient.invalidateQueries({ queryKey: ['tool', workspaceId] })
       setEditMode(false)
     } catch (err) {
       console.error('Failed to save tool config:', err)

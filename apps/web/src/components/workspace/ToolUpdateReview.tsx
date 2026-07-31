@@ -12,13 +12,13 @@ interface Proposal {
 }
 
 interface ToolUpdateReviewProps {
+  workspaceId: string
   forgeId: string
-  round: number
   onClose: () => void
   onApplied: () => void
 }
 
-export default function ToolUpdateReview({ forgeId, round, onClose, onApplied }: ToolUpdateReviewProps) {
+export default function ToolUpdateReview({ workspaceId, forgeId, onClose, onApplied }: ToolUpdateReviewProps) {
   const [proposals, setProposals] = useState<Proposal[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -26,7 +26,7 @@ export default function ToolUpdateReview({ forgeId, round, onClose, onApplied }:
   const [applying, setApplying] = useState(false)
 
   useEffect(() => {
-    integrateKnowledge(forgeId, round)
+    integrateKnowledge(workspaceId, forgeId)
       .then((result) => {
         setProposals(result.proposals)
         setSelected(Object.fromEntries(result.proposals.map((_, i) => [i, true])))
@@ -35,14 +35,14 @@ export default function ToolUpdateReview({ forgeId, round, onClose, onApplied }:
         setError(err instanceof Error ? err.message : 'Failed to generate proposals')
       })
       .finally(() => setLoading(false))
-  }, [forgeId, round])
+  }, [workspaceId, forgeId])
 
   const handleApply = async () => {
     setApplying(true)
     try {
       const selectedProposals = proposals
         .filter((_, i) => selected[i])
-      await applyToolUpdates(forgeId, selectedProposals as unknown as Array<Record<string, unknown>>)
+      await applyToolUpdates(workspaceId, selectedProposals as unknown as Array<Record<string, unknown>>)
       onApplied()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to apply updates')

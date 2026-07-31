@@ -94,6 +94,18 @@ const COMPONENT_SCHEMAS: Record<string, string> = {
   "showScoreAtEnd": true,
   "passingScore": 70
 }`,
+  curriculum: `"curriculum" - For structured learning paths and educational outlines
+{
+  "id": "unique_id", "type": "curriculum", "title": "...", "description": "...",
+  "modules": [{
+    "id": "module_id",
+    "title": "Module title",
+    "description": "Brief description of what this module covers",
+    "learningObjectives": ["What the learner will understand/be able to do"],
+    "estimatedTime": "e.g. 15 minutes",
+    "prerequisites": ["module_ids that should be completed first"] or []
+  }]
+}`,
   custom: `"custom" - For any knowledge that doesn't fit the standard types. Design a bespoke layout.
 {
   "id": "unique_id", "type": "custom", "title": "...", "description": "...",
@@ -118,6 +130,7 @@ Component types and when to use them:
 - step_by_step: sequential procedures and processes
 - calculator: quantitative assessments with interactive inputs and formulas
 - quiz: knowledge check or scenario-based assessment to test understanding
+- curriculum: structured learning path or educational outline with expandable modules
 - custom: bespoke layout for knowledge that doesn't fit the above types (stats, timelines, key quotes, reference material). Use this to create something unique and tailored.
 
 Rules:
@@ -126,6 +139,7 @@ Rules:
 - Each component should map to specific knowledge from the extractions
 - Fewer, richer components are better than many shallow ones
 - Consider using "quiz" when the expert's knowledge lends itself to testing understanding (common mistakes, best practices, scenario-based decisions)
+- Consider using "curriculum" when the expert's knowledge lends itself to a structured learning path (training programs, onboarding sequences, skill development, educational courses)
 - Consider using "custom" when the expert's knowledge has a unique structure (e.g. key statistics, timeline of events, curated quotes/principles) that would be flattened by forcing it into a standard type`
 
 // ============ JSON Schemas for Structured Output ============

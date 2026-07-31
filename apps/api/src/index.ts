@@ -5,20 +5,24 @@ import interviewsRoute from "./routes/interviews"
 import toolsRoute from "./routes/tools"
 import voiceRoute from "./routes/voice"
 import documentsRoute from "./routes/documents"
+import workspacesRoute from "./routes/workspaces"
 
 const app = new Hono()
 
 app.use("/*", cors({
-  origin: ["http://localhost:3070", "http://localhost:5173"],
+  origin: process.env.CORS_ORIGIN
+    ? process.env.CORS_ORIGIN.split(",")
+    : ["http://localhost:3070", "http://localhost:5173"],
   allowMethods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
   allowHeaders: ["Content-Type"],
 }))
 
+app.route("/api/workspaces", workspacesRoute)
+app.route("/api/workspaces", toolsRoute)
+app.route("/api/workspaces", documentsRoute)
 app.route("/api/forges", forgesRoute)
 app.route("/api/forges", interviewsRoute)
-app.route("/api/forges", toolsRoute)
 app.route("/api/forges", voiceRoute)
-app.route("/api/forges", documentsRoute)
 
 app.get("/api/health", (c) => c.json({ status: "ok" }))
 

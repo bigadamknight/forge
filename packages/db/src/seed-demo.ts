@@ -1,13 +1,14 @@
-// Seed a demo forge with every component type
+// Seed a demo workspace + forge with every component type
 // Usage: bun run packages/db/src/seed-demo.ts
 //        bun run packages/db/src/seed-demo.ts --clean (replace existing)
 
 import { db } from "./index"
-import { forges } from "./schema"
+import { workspaces, forges } from "./schema"
 import { eq } from "drizzle-orm"
 import type { ToolConfig } from "@forge/shared"
 
-const DEMO_FORGE_ID = "11111111-1111-1111-1111-111111111111"
+const DEMO_WORKSPACE_ID = "11111111-1111-1111-1111-111111111111"
+const DEMO_FORGE_ID = "22222222-2222-2222-2222-222222222222"
 
 const toolConfig: ToolConfig = {
   title: "Complete Home Renovation Guide",
@@ -451,39 +452,57 @@ async function main() {
   const shouldClean = args.includes("--clean")
 
   if (shouldClean) {
-    console.log("Cleaning existing demo forge...")
-    await db.delete(forges).where(eq(forges.id, DEMO_FORGE_ID))
+    console.log("Cleaning existing demo workspace...")
+    await db.delete(workspaces).where(eq(workspaces.id, DEMO_WORKSPACE_ID))
     console.log("Cleaned.\n")
   }
 
-  console.log("Seeding demo forge with all component types...\n")
+  console.log("Seeding demo workspace with all component types...\n")
 
+  // Create workspace first
+  const [workspace] = await db
+    .insert(workspaces)
+    .values({
+      id: DEMO_WORKSPACE_ID,
+      title: "Home Renovation Guide - Sarah Chen",
+      description: "An interactive toolkit built from Sarah Chen's 15 years of residential renovation experience.",
+      toolConfig,
+      updatedAt: new Date(),
+    })
+    .onConflictDoNothing()
+    .returning()
+
+  if (!workspace) {
+    console.log("Demo workspace already exists. Use --clean to replace it.")
+    process.exit(0)
+  }
+
+  // Create forge (interview) linked to workspace
   const [forge] = await db
     .insert(forges)
     .values({
       id: DEMO_FORGE_ID,
-      title: "Home Renovation Guide - Sarah Chen",
+      workspaceId: DEMO_WORKSPACE_ID,
+      title: "Sarah Chen Interview",
       expertName: "Sarah Chen",
       expertBio: "Residential renovation specialist with 15 years of experience across hundreds of projects. Helps first-time renovators avoid costly mistakes through practical, proven advice.",
       domain: "Home Renovation",
       targetAudience: "First-time home renovators planning their first major project",
       status: "complete",
-      toolConfig,
       depth: "deep",
       updatedAt: new Date(),
-      completedAt: new Date(),
     })
+    .onConflictDoNothing()
     .returning()
 
-  console.log(`Created demo forge: ${forge.title} (${forge.id})`)
-  console.log(`Status: ${forge.status}`)
+  console.log(`Created workspace: ${workspace.title} (${workspace.id})`)
+  if (forge) console.log(`Created forge: ${forge.title} (${forge.id})`)
   console.log(`\nComponents (${toolConfig.layout.length}):`)
   for (const comp of toolConfig.layout) {
     console.log(`  - ${comp.type}: ${comp.title}`)
   }
   console.log(`\nOperations board: ${toolConfig.operationsBoard?.title} (${toolConfig.operationsBoard?.tasks.length} tasks)`)
-  console.log(`\nView at: http://localhost:3070/forge/${forge.id}/tool`)
-  console.log(`Share at: http://localhost:3070/tool/${forge.id}`)
+  console.log(`\nView at: http://localhost:3070/workspaces/${workspace.id}`)
 
   process.exit(0)
 }

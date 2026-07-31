@@ -4,6 +4,7 @@ import { eq, asc, and } from "drizzle-orm"
 import { extractKnowledge } from "../services/extractor"
 import { DEPTH_PRESETS, type InterviewDepth } from "@forge/shared"
 import { embedExtractionAsync } from "../lib/embeddings"
+import { advanceToNextQuestion, completeRound, getMaxRound } from "../services/interview-progress"
 
 const app = new Hono()
 
@@ -243,7 +244,10 @@ app.post("/:forgeId/voice-extract", async (c) => {
   }
 })
 
-// Advance question in voice mode only when enough knowledge has been captured
+// Advance question in voice mode only when enough knowledge has been captured.
+// The gate (extraction count) is voice-specific — there is no per-question
+// validator loop in voice — but the advancement mechanics and interview
+// completion are the shared engine used by the text path.
 async function advanceVoiceProgress(forgeId: string, currentSectionId: string) {
   const [forge] = await db.select({ depth: forges.depth }).from(forges).where(eq(forges.id, forgeId)).limit(1)
   const depth = (forge?.depth || "standard") as InterviewDepth
@@ -267,73 +271,40 @@ async function advanceVoiceProgress(forgeId: string, currentSectionId: string) {
   const extractionsNeeded = (answeredCount + 1) * extractionsPerQuestion
   if (sectionExtractions.length < extractionsNeeded) return
 
-  // Mark current question as answered
-  await db.update(interviewQuestions).set({
-    status: "answered",
-    answeredAt: new Date(),
-  }).where(eq(interviewQuestions.id, activeQuestion.id))
-
-  // Find next pending question in this section
-  const nextQuestions = await db.select().from(interviewQuestions)
-    .where(and(
-      eq(interviewQuestions.sectionId, currentSectionId),
-      eq(interviewQuestions.status, "pending")
-    ))
-    .orderBy(asc(interviewQuestions.orderIndex))
-    .limit(1)
-
-  if (nextQuestions.length > 0) {
-    await db.update(interviewQuestions).set({ status: "active" })
-      .where(eq(interviewQuestions.id, nextQuestions[0].id))
-    return
-  }
-
-  // Section complete - activate next section
-  await db.update(interviewSections).set({
-    status: "completed",
-    completedAt: new Date(),
-  }).where(eq(interviewSections.id, currentSectionId))
-
-  const nextSections = await db.select().from(interviewSections)
-    .where(and(
-      eq(interviewSections.forgeId, forgeId),
-      eq(interviewSections.status, "pending")
-    ))
-    .orderBy(asc(interviewSections.orderIndex))
-    .limit(1)
-
-  if (nextSections.length === 0) return
-
-  await db.update(interviewSections).set({ status: "active" })
-    .where(eq(interviewSections.id, nextSections[0].id))
-
-  const firstQuestion = await db.select().from(interviewQuestions)
-    .where(eq(interviewQuestions.sectionId, nextSections[0].id))
-    .orderBy(asc(interviewQuestions.orderIndex))
-    .limit(1)
-
-  if (firstQuestion.length > 0) {
-    await db.update(interviewQuestions).set({ status: "active" })
-      .where(eq(interviewQuestions.id, firstQuestion[0].id))
+  const next = await advanceToNextQuestion(forgeId, currentSectionId, activeQuestion.id)
+  if (next === null) {
+    // No more questions in this round — complete it, same as the text path
+    const maxRound = await getMaxRound(forgeId)
+    await completeRound(forgeId, maxRound)
+    console.log(`[voice] Interview round ${maxRound} completed for forge ${forgeId}`)
   }
 }
 
 // ============ Intro Voice Session ============
 
-import { extractIntroFields } from "../services/intro-extractor"
+import { extractIntroFields, extractExpertProfile } from "../services/intro-extractor"
+import type { ExpertProfile } from "@forge/shared"
+import { EMPTY_EXPERT_PROFILE } from "@forge/shared"
 
-const INTRO_VOICE_PROMPT = `You are a warm, friendly host welcoming someone to Forge — a tool that captures expert knowledge through conversation. Your goal is to learn three things naturally:
+const INTRO_VOICE_PROMPT = `You are a warm, friendly host welcoming someone to Forge — a tool that captures expert knowledge through conversation. Your goal is to build a rich profile of who they are and what makes their expertise special.
 
+You need to learn at minimum:
 1. Their name
 2. Their area of expertise (what they know deeply)
 3. Who they want to help with this knowledge (target audience)
 
+Then explore deeper:
+- How long they've been doing this
+- What makes their approach unique
+- Mistakes they see others make
+- What they're most passionate about
+
 Guidelines:
 - Be warm and enthusiastic but not over-the-top
-- Ask one thing at a time, don't front-load all three questions
-- Acknowledge what they share before moving on
-- If they give you multiple pieces in one message, acknowledge all of them
-- Once you have all three, say something like "Great, I've got what I need to plan your interview. Feel free to share any additional context, or go ahead and plan your interview when you're ready."
+- Ask one thing at a time, don't front-load multiple questions
+- Acknowledge what they share before moving on — show genuine interest
+- Follow interesting threads rather than working through a rigid checklist
+- Once you have the core 3 plus a few depth details, say something like "I've got a great picture of your expertise. Feel free to share more, or go ahead and plan your interview when you're ready."
 - Keep responses SHORT. 1-2 sentences. This is spoken conversation.
 - One question at a time. Never ask multiple questions.`
 
@@ -379,15 +350,60 @@ app.post("/:forgeId/intro/voice-message", async (c) => {
   const mappedRole = role === 'agent' ? 'assistant' : role
   introMessages.push({ role: mappedRole, content })
 
-  // Run intro field extraction on user messages
+  // Run profile extraction and knowledge extraction on user messages
+  let introProfile: ExpertProfile = metadata.introProfile || EMPTY_EXPERT_PROFILE
   let introExtracted = metadata.introExtracted || {}
   if (mappedRole === 'user') {
     try {
-      const extracted = await extractIntroFields(introMessages as Array<{ role: "user" | "assistant"; content: string }>)
+      // Get existing extractions for dedup
+      const existingExtractions = await db.select().from(extractions)
+        .where(eq(extractions.forgeId, forgeId))
+      const existingContents = existingExtractions.map((e) => e.content)
+
+      // Run profile extraction and knowledge extraction in parallel
+      const [profile, extractedItems] = await Promise.all([
+        extractExpertProfile(
+          introMessages as Array<{ role: "user" | "assistant"; content: string }>,
+          introProfile
+        ),
+        extractKnowledge(
+          content,
+          forge.domain || "General",
+          "Intro conversation",
+          existingContents,
+          "low"
+        ),
+      ])
+
+      // Merge profile: keep previous values if new ones are null
+      const merged: ExpertProfile = { ...EMPTY_EXPERT_PROFILE }
+      for (const key of Object.keys(EMPTY_EXPERT_PROFILE) as Array<keyof ExpertProfile>) {
+        const newVal = profile[key]
+        const prevVal = introProfile[key]
+        if (newVal !== null && newVal !== undefined) {
+          ;(merged as any)[key] = newVal
+        } else if (prevVal !== null && prevVal !== undefined) {
+          ;(merged as any)[key] = prevVal
+        }
+      }
+      introProfile = merged
       introExtracted = {
-        expertName: extracted.expertName || introExtracted.expertName || null,
-        domain: extracted.domain || introExtracted.domain || null,
-        targetAudience: extracted.targetAudience || introExtracted.targetAudience || null,
+        expertName: merged.expertName,
+        domain: merged.domain,
+        targetAudience: merged.targetAudience,
+      }
+
+      // Save knowledge extractions silently
+      for (const item of extractedItems) {
+        const [saved] = await db.insert(extractions).values({
+          forgeId,
+          type: item.type,
+          content: item.content,
+          structured: item.structured || null,
+          confidence: item.confidence,
+          tags: item.tags,
+        }).returning()
+        embedExtractionAsync(saved.id, item.type, item.content)
       }
     } catch (err) {
       console.error("Intro voice extraction failed:", err)
@@ -395,7 +411,7 @@ app.post("/:forgeId/intro/voice-message", async (c) => {
   }
 
   await db.update(forges).set({
-    metadata: { ...metadata, introMessages, introExtracted },
+    metadata: { ...metadata, introMessages, introProfile, introExtracted },
     updatedAt: new Date(),
   }).where(eq(forges.id, forgeId))
 
@@ -404,9 +420,54 @@ app.post("/:forgeId/intro/voice-message", async (c) => {
 
 app.post("/:forgeId/intro/voice-extract", async (c) => {
   const { forgeId } = c.req.param()
-  // Intro voice extract doesn't save knowledge extractions — it's just gathering basic info.
-  // Return empty extractions to satisfy VoicePanel's interface.
-  return c.json({ extractions: [] })
+  const { content } = await c.req.json()
+
+  if (!content) {
+    return c.json({ extractions: [] })
+  }
+
+  const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
+  if (!forge) return c.json({ extractions: [] })
+
+  const existing = await db.select().from(extractions)
+    .where(eq(extractions.forgeId, forgeId))
+  const existingContents = existing.map((e) => e.content)
+
+  try {
+    const items = await extractKnowledge(
+      content,
+      forge.domain || "General",
+      "Intro conversation",
+      existingContents,
+      "low"
+    )
+
+    const saved = []
+    for (const item of items) {
+      const [row] = await db.insert(extractions).values({
+        forgeId,
+        type: item.type,
+        content: item.content,
+        structured: item.structured || null,
+        confidence: item.confidence,
+        tags: item.tags,
+      }).returning()
+
+      saved.push({
+        id: row.id,
+        type: item.type,
+        content: item.content,
+        confidence: item.confidence,
+        tags: item.tags,
+      })
+      embedExtractionAsync(row.id, item.type, item.content)
+    }
+
+    return c.json({ extractions: saved })
+  } catch (err) {
+    console.error("Intro voice extraction failed:", err)
+    return c.json({ extractions: [] })
+  }
 })
 
 export default app

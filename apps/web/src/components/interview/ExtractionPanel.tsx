@@ -1,27 +1,41 @@
 import { Brain, Lightbulb, AlertTriangle, BookOpen, Target, BarChart3, Hash, Beaker, Info } from 'lucide-react'
 import type { Extraction } from '../../lib/api'
+import { getMergedExtractionTypes, type CustomExtractionType } from '../../lib/extractionTypes'
 
 interface ExtractionPanelProps {
   extractions: Extraction[]
   liveExtractions: Extraction[]
+  customExtractionTypes?: CustomExtractionType[]
 }
 
-const TYPE_CONFIG: Record<string, { color: string, bg: string, icon: typeof Brain }> = {
-  fact: { color: 'text-blue-400', bg: 'bg-blue-500/10 border-blue-500/20', icon: BookOpen },
-  procedure: { color: 'text-purple-400', bg: 'bg-purple-500/10 border-purple-500/20', icon: Target },
-  decision_rule: { color: 'text-cyan-400', bg: 'bg-cyan-500/10 border-cyan-500/20', icon: Brain },
-  warning: { color: 'text-red-400', bg: 'bg-red-500/10 border-red-500/20', icon: AlertTriangle },
-  tip: { color: 'text-green-400', bg: 'bg-green-500/10 border-green-500/20', icon: Lightbulb },
-  metric: { color: 'text-amber-400', bg: 'bg-amber-500/10 border-amber-500/20', icon: BarChart3 },
-  definition: { color: 'text-indigo-400', bg: 'bg-indigo-500/10 border-indigo-500/20', icon: Hash },
-  example: { color: 'text-teal-400', bg: 'bg-teal-500/10 border-teal-500/20', icon: Beaker },
-  context: { color: 'text-slate-400', bg: 'bg-slate-500/10 border-slate-500/20', icon: Info },
+const ICON_MAP: Record<string, typeof Brain> = {
+  fact: BookOpen,
+  procedure: Target,
+  decision_rule: Brain,
+  warning: AlertTriangle,
+  tip: Lightbulb,
+  metric: BarChart3,
+  definition: Hash,
+  example: Beaker,
+  context: Info,
 }
 
-export default function ExtractionPanel({ extractions, liveExtractions }: ExtractionPanelProps) {
+export default function ExtractionPanel({ extractions, liveExtractions, customExtractionTypes }: ExtractionPanelProps) {
   const unique = [...new Map(
     [...extractions, ...liveExtractions].map((e) => [e.id, e])
   ).values()]
+
+  const mergedTypes = getMergedExtractionTypes(customExtractionTypes)
+
+  const getConfig = (type: string) => {
+    const meta = mergedTypes[type]
+    const color = meta?.color?.split(' ')[1] || 'text-slate-400'
+    const bg = meta?.color
+      ? meta.color.replace('/15', '/10') + ' border-' + meta.color.split('/15')[0].replace('bg-', '') + '/20'
+      : 'bg-slate-500/10 border-slate-500/20'
+    const icon = ICON_MAP[type] || Info
+    return { color, bg, icon }
+  }
 
   return (
     <div className="flex flex-col h-full">
@@ -47,6 +61,8 @@ export default function ExtractionPanel({ extractions, liveExtractions }: Extrac
               key={extraction.id}
               extraction={extraction}
               isNew={i >= extractions.length}
+              config={getConfig(extraction.type)}
+              label={mergedTypes[extraction.type]?.label || extraction.type.replace('_', ' ')}
             />
           ))
         )}
@@ -61,8 +77,12 @@ function confidenceBadge(confidence: number): string {
   return 'bg-slate-500/20 text-slate-400'
 }
 
-function ExtractionCard({ extraction, isNew }: { extraction: Extraction, isNew: boolean }) {
-  const config = TYPE_CONFIG[extraction.type] || TYPE_CONFIG.context
+function ExtractionCard({ extraction, isNew, config, label }: {
+  extraction: Extraction
+  isNew: boolean
+  config: { color: string; bg: string; icon: typeof Brain }
+  label: string
+}) {
   const Icon = config.icon
 
   return (
@@ -76,7 +96,7 @@ function ExtractionCard({ extraction, isNew }: { extraction: Extraction, isNew: 
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
             <span className={`text-xs font-medium ${config.color}`}>
-              {extraction.type.replace('_', ' ')}
+              {label}
             </span>
             {extraction.confidence !== null && (
               <span className={`text-xs px-1.5 py-0.5 ${confidenceBadge(extraction.confidence)}`}>

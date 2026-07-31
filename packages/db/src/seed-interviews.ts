@@ -5,17 +5,27 @@
 // with status "processing" so they're ready for the next pipeline steps.
 
 import { db } from "./index"
-import { forges, interviewSections, interviewQuestions, messages, extractions } from "./schema"
+import { forges, interviewSections, interviewQuestions, messages, extractions, workspaces } from "./schema"
 import { allInterviews, type FixtureInterview } from "./fixtures/interviews"
 import { eq } from "drizzle-orm"
 
 async function seedInterview(interview: FixtureInterview) {
   const { forge: forgeData, interviewConfig, sections } = interview
 
-  // Create forge
+  // Create workspace + forge
+  const [workspace] = await db
+    .insert(workspaces)
+    .values({
+      title: forgeData.title,
+      description: forgeData.domain,
+      updatedAt: new Date(),
+    })
+    .returning()
+
   const [forge] = await db
     .insert(forges)
     .values({
+      workspaceId: workspace.id,
       title: forgeData.title,
       expertName: forgeData.expertName,
       expertBio: forgeData.expertBio,

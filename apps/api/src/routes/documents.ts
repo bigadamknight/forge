@@ -1,13 +1,13 @@
 import { Hono } from "hono"
-import { db, documents, forges } from "@forge/db"
+import { db, documents, workspaces } from "@forge/db"
 import { eq, and, asc } from "drizzle-orm"
 
 const app = new Hono()
 
 // ============ Add Document ============
 
-app.post("/:forgeId/documents", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/documents", async (c) => {
+  const { workspaceId } = c.req.param()
   const { type, title, content } = await c.req.json()
 
   if (!type || !title || !content) {
@@ -18,8 +18,8 @@ app.post("/:forgeId/documents", async (c) => {
     return c.json({ error: "type must be 'text' or 'url'" }, 400)
   }
 
-  const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  const [workspace] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
   let extractedContent: string | null = null
 
@@ -43,12 +43,11 @@ app.post("/:forgeId/documents", async (c) => {
       }
     } catch (err: any) {
       console.warn(`[documents] Failed to fetch URL: ${err.message}`)
-      // Store the URL anyway, just without extracted content
     }
   }
 
   const [doc] = await db.insert(documents).values({
-    forgeId,
+    workspaceId,
     type,
     title,
     content,
@@ -60,11 +59,11 @@ app.post("/:forgeId/documents", async (c) => {
 
 // ============ List Documents ============
 
-app.get("/:forgeId/documents", async (c) => {
-  const { forgeId } = c.req.param()
+app.get("/:workspaceId/documents", async (c) => {
+  const { workspaceId } = c.req.param()
 
   const docs = await db.select().from(documents)
-    .where(eq(documents.forgeId, forgeId))
+    .where(eq(documents.workspaceId, workspaceId))
     .orderBy(asc(documents.createdAt))
 
   return c.json(docs)
@@ -72,8 +71,8 @@ app.get("/:forgeId/documents", async (c) => {
 
 // ============ Update Document ============
 
-app.patch("/:forgeId/documents/:docId", async (c) => {
-  const { forgeId, docId } = c.req.param()
+app.patch("/:workspaceId/documents/:docId", async (c) => {
+  const { workspaceId, docId } = c.req.param()
   const { title, content } = await c.req.json()
 
   const updates: Record<string, string> = {}
@@ -86,7 +85,7 @@ app.patch("/:forgeId/documents/:docId", async (c) => {
 
   const [doc] = await db.update(documents)
     .set(updates)
-    .where(and(eq(documents.id, docId), eq(documents.forgeId, forgeId)))
+    .where(and(eq(documents.id, docId), eq(documents.workspaceId, workspaceId)))
     .returning()
 
   if (!doc) return c.json({ error: "Document not found" }, 404)
@@ -96,11 +95,11 @@ app.patch("/:forgeId/documents/:docId", async (c) => {
 
 // ============ Delete Document ============
 
-app.delete("/:forgeId/documents/:docId", async (c) => {
-  const { forgeId, docId } = c.req.param()
+app.delete("/:workspaceId/documents/:docId", async (c) => {
+  const { workspaceId, docId } = c.req.param()
 
   const result = await db.delete(documents)
-    .where(and(eq(documents.id, docId), eq(documents.forgeId, forgeId)))
+    .where(and(eq(documents.id, docId), eq(documents.workspaceId, workspaceId)))
     .returning()
 
   if (result.length === 0) return c.json({ error: "Document not found" }, 404)

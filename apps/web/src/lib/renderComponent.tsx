@@ -20,13 +20,14 @@ import StepByStep from '../components/toolkit/StepByStep'
 import QuestionFlow from '../components/toolkit/QuestionFlow'
 import Custom from '../components/toolkit/Custom'
 import Quiz from '../components/toolkit/Quiz'
+import Curriculum from '../components/toolkit/Curriculum'
 
 export interface RenderTabComponentProps {
   config: Record<string, unknown>
   id: string
   type: string
   title: string
-  forgeId: string
+  workspaceId: string
   userContext: Record<string, unknown>
   expertAnswers: Record<string, AdviceSection[]>
   loadingFlows: Record<string, boolean>
@@ -83,6 +84,8 @@ export function renderTabComponent(props: RenderTabComponentProps) {
       )
     case 'quiz':
       return <Quiz config={config as unknown as QuizConfig} onComplete={onComplete} {...editProps} />
+    case 'curriculum':
+      return <Curriculum config={config as any} workspaceId={props.workspaceId} onComplete={onComplete} {...editProps} />
     case 'custom':
       return <Custom config={config as unknown as CustomConfig} onComplete={onComplete} {...editProps} />
     default:
@@ -157,6 +160,7 @@ export const COMPONENT_TYPE_LABELS: Record<string, string> = {
   calculator: 'Calculator',
   question_flow: 'Question Flow',
   quiz: 'Quiz',
+  curriculum: 'Curriculum',
   custom: 'Custom',
   info_card: 'Info Card',
 }

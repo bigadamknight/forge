@@ -1,110 +1,150 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
-import { db, forges, extractions, documents } from "@forge/db"
-import { eq, asc, and } from "drizzle-orm"
+import { db, workspaces, forges, extractions, documents, toolAdvice } from "@forge/db"
+import { eq, asc, and, inArray } from "drizzle-orm"
 import { generateToolConfig, generateToolPlan, generateComponent, buildKnowledgeSummary, buildDocumentSection, deriveComponentSpec, type ToolPlan } from "../services/tool-generator"
 import { generateText, generateJSON, HAIKU } from "../lib/llm"
-import { searchHybrid, hasEmbeddings } from "../lib/embeddings"
+import { searchUnitsHybrid, hasUnitEmbeddings } from "../lib/embeddings"
+import { validateComponentConfig } from "../lib/component-validation"
+import { buildComponentPromptSummary, buildToolUsageRules } from "@forge/shared"
 
 const app = new Hono()
 
 // ============ Shared Helpers ============
 
-async function getForge(forgeId: string) {
-  const [forge] = await db.select().from(forges).where(eq(forges.id, forgeId)).limit(1)
-  return forge ?? null
+async function getWorkspace(workspaceId: string) {
+  const [workspace] = await db.select().from(workspaces).where(eq(workspaces.id, workspaceId)).limit(1)
+  return workspace ?? null
 }
 
-async function loadForgeExtractions(forgeId: string) {
+async function getWorkspaceForgeIds(workspaceId: string): Promise<string[]> {
+  const rows = await db.select({ id: forges.id })
+    .from(forges).where(eq(forges.workspaceId, workspaceId))
+  return rows.map(r => r.id)
+}
+
+async function loadWorkspaceExtractions(workspaceId: string) {
+  const forgeIds = await getWorkspaceForgeIds(workspaceId)
+  if (forgeIds.length === 0) return []
   const items = await db.select().from(extractions)
-    .where(eq(extractions.forgeId, forgeId))
+    .where(inArray(extractions.forgeId, forgeIds))
     .orderBy(asc(extractions.createdAt))
   return items.map((e) => ({
     type: e.type, content: e.content, confidence: e.confidence, tags: e.tags,
   }))
 }
 
-async function loadForgeDocuments(forgeId: string) {
+async function loadWorkspaceDocuments(workspaceId: string) {
   const items = await db.select().from(documents)
-    .where(eq(documents.forgeId, forgeId))
+    .where(eq(documents.workspaceId, workspaceId))
     .orderBy(asc(documents.createdAt))
   return items.map((d) => ({
     title: d.title, type: d.type, content: d.extractedContent || d.content,
   }))
 }
 
-async function loadExpertKnowledge(forgeId: string, query: string, limit = 15): Promise<string> {
-  const useEmbed = await hasEmbeddings(forgeId)
-  if (useEmbed) {
-    const results = await searchHybrid(forgeId, query, limit)
-    return results.map((r) => `[${r.type}] ${r.content}`).join("\n")
+async function loadExpertKnowledge(workspaceId: string, query: string, limit = 15): Promise<string> {
+  // Workspace-scoped hybrid search over the curated knowledge layer
+  if (await hasUnitEmbeddings(workspaceId)) {
+    const results = await searchUnitsHybrid(workspaceId, query, limit)
+    if (results.length > 0) {
+      return results.map((r) => `[${r.type}] ${r.content}`).join("\n")
+    }
   }
+
+  // Fallback: raw extractions across the workspace's forges
+  const forgeIds = await getWorkspaceForgeIds(workspaceId)
+  if (forgeIds.length === 0) return ""
   const all = await db.select().from(extractions)
-    .where(eq(extractions.forgeId, forgeId))
+    .where(inArray(extractions.forgeId, forgeIds))
     .orderBy(asc(extractions.createdAt))
   return all.slice(0, limit + 25).map((e) => `[${e.type}] ${e.content}`).join("\n")
 }
 
+// Get expert info from the workspace's first completed interview
+async function getWorkspaceExpertInfo(workspaceId: string) {
+  const [interview] = await db.select({
+    expertName: forges.expertName,
+    domain: forges.domain,
+    targetAudience: forges.targetAudience,
+    metadata: forges.metadata,
+  }).from(forges)
+    .where(eq(forges.workspaceId, workspaceId))
+    .orderBy(forges.createdAt)
+    .limit(1)
+  return {
+    expertName: interview?.expertName || "Expert",
+    domain: interview?.domain || "General",
+    targetAudience: interview?.targetAudience || null,
+    metadata: interview?.metadata || null,
+  }
+}
+
 // ============ Generate Tool from Knowledge ============
 
-app.post("/:forgeId/generate-tool", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/generate-tool", async (c) => {
+  const { workspaceId } = c.req.param()
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  await db.update(forges).set({ status: "generating", updatedAt: new Date() }).where(eq(forges.id, forgeId))
+  const expert = await getWorkspaceExpertInfo(workspaceId)
 
-  const extractionItems = await loadForgeExtractions(forgeId)
+  const extractionItems = await loadWorkspaceExtractions(workspaceId)
   if (extractionItems.length === 0) {
     return c.json({ error: "No knowledge extracted yet. Complete the interview first." }, 400)
   }
 
-  const docItems = await loadForgeDocuments(forgeId)
-  console.log(`[generate-tool] Starting for ${forgeId} (${extractionItems.length} extractions, ${docItems.length} documents)`)
+  const docItems = await loadWorkspaceDocuments(workspaceId)
+  console.log(`[generate-tool] Starting for workspace ${workspaceId} (${extractionItems.length} extractions, ${docItems.length} documents)`)
 
   let toolConfig
   try {
-    toolConfig = await generateToolConfig(forge.expertName!, forge.domain!, forge.targetAudience, extractionItems, docItems)
+    toolConfig = await generateToolConfig(expert.expertName, expert.domain, expert.targetAudience, extractionItems, docItems)
     console.log("[generate-tool] Opus returned, saving config")
   } catch (err: any) {
     console.error("[generate-tool] Failed:", err.message)
-    await db.update(forges).set({ status: "interviewing", updatedAt: new Date() }).where(eq(forges.id, forgeId))
     return c.json({ error: `Tool generation failed: ${err.message}` }, 500)
   }
 
-  await db.update(forges).set({
+  await db.update(workspaces).set({
     toolConfig: toolConfig as any,
+    updatedAt: new Date(),
+  }).where(eq(workspaces.id, workspaceId))
+
+  // Mark all interviews as complete
+  await db.update(forges).set({
     status: "complete",
     completedAt: new Date(),
     updatedAt: new Date(),
-  }).where(eq(forges.id, forgeId))
+  }).where(eq(forges.workspaceId, workspaceId))
 
-  const updated = await getForge(forgeId)
+  const updated = await getWorkspace(workspaceId)
   return c.json(updated)
 })
 
 // ============ Plan Tool (returns plan for user review) ============
 
-app.post("/:forgeId/plan-tool", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/plan-tool", async (c) => {
+  const { workspaceId } = c.req.param()
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  const extractionItems = await loadForgeExtractions(forgeId)
+  const expert = await getWorkspaceExpertInfo(workspaceId)
+  const extractionItems = await loadWorkspaceExtractions(workspaceId)
   if (extractionItems.length === 0) {
     return c.json({ error: "No knowledge extracted yet. Complete the interview first." }, 400)
   }
 
-  const docItems = await loadForgeDocuments(forgeId)
+  const docItems = await loadWorkspaceDocuments(workspaceId)
 
-  console.log(`[plan-tool] Planning for ${forgeId} with ${extractionItems.length} extractions`)
+  console.log(`[plan-tool] Planning for workspace ${workspaceId} with ${extractionItems.length} extractions`)
 
   const plan = await generateToolPlan(
-    forge.expertName!,
-    forge.domain!,
-    forge.targetAudience,
+    expert.expertName,
+    expert.domain,
+    expert.targetAudience,
     extractionItems,
     docItems
   )
@@ -115,24 +155,25 @@ app.post("/:forgeId/plan-tool", async (c) => {
 
 // ============ Generate Tool (Streaming with Progress) ============
 
-app.post("/:forgeId/generate-tool-stream", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/generate-tool-stream", async (c) => {
+  const { workspaceId } = c.req.param()
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  const extractionItems = await loadForgeExtractions(forgeId)
+  const expert = await getWorkspaceExpertInfo(workspaceId)
+  const extractionItems = await loadWorkspaceExtractions(workspaceId)
   if (extractionItems.length === 0) {
     return c.json({ error: "No knowledge extracted yet. Complete the interview first." }, 400)
   }
 
-  const docItems = await loadForgeDocuments(forgeId)
+  const docItems = await loadWorkspaceDocuments(workspaceId)
 
-  const previousStatus = forge.status
+  // Mark interviews as generating
   await db.update(forges).set({
     status: "generating",
     updatedAt: new Date(),
-  }).where(eq(forges.id, forgeId))
+  }).where(eq(forges.workspaceId, workspaceId))
 
   // Accept an optional confirmed plan from the request body
   let confirmedPlan: ToolPlan | null = null
@@ -149,13 +190,13 @@ app.post("/:forgeId/generate-tool-stream", async (c) => {
       let plan: ToolPlan
       if (confirmedPlan) {
         plan = confirmedPlan
-        console.log(`[generate-tool-stream] Using confirmed plan for ${forgeId} (${plan.components.length} components)`)
+        console.log(`[generate-tool-stream] Using confirmed plan for workspace ${workspaceId} (${plan.components.length} components)`)
       } else {
-        console.log(`[generate-tool-stream] Planning for ${forgeId}`)
+        console.log(`[generate-tool-stream] Planning for workspace ${workspaceId}`)
         plan = await generateToolPlan(
-          forge.expertName!,
-          forge.domain!,
-          forge.targetAudience,
+          expert.expertName,
+          expert.domain,
+          expert.targetAudience,
           extractionItems,
           docItems
         )
@@ -181,7 +222,7 @@ app.post("/:forgeId/generate-tool-stream", async (c) => {
 
       await Promise.all(
         componentSpecs.map(async (spec, i) => {
-          layout[i] = await generateComponent(spec, knowledgeSummary, documentSection, forge.expertName!, forge.domain!)
+          layout[i] = await generateComponent(spec, knowledgeSummary, documentSection, expert.expertName, expert.domain)
           console.log(`[generate-tool-stream] Finished ${i + 1}/${componentSpecs.length}: ${spec.title}`)
 
           await stream.writeSSE({
@@ -213,14 +254,19 @@ app.post("/:forgeId/generate-tool-stream", async (c) => {
         layout,
       }
 
-      await db.update(forges).set({
+      await db.update(workspaces).set({
         toolConfig: toolConfig as any,
+        updatedAt: new Date(),
+      }).where(eq(workspaces.id, workspaceId))
+
+      // Mark interviews as complete
+      await db.update(forges).set({
         status: "complete",
         completedAt: new Date(),
         updatedAt: new Date(),
-      }).where(eq(forges.id, forgeId))
+      }).where(eq(forges.workspaceId, workspaceId))
 
-      console.log(`[generate-tool-stream] Complete for ${forgeId}`)
+      console.log(`[generate-tool-stream] Complete for workspace ${workspaceId}`)
       await stream.writeSSE({
         data: JSON.stringify({ type: "complete" }),
       })
@@ -228,10 +274,11 @@ app.post("/:forgeId/generate-tool-stream", async (c) => {
       const message = error instanceof Error ? error.message : "Unknown error"
       console.error("[generate-tool-stream] Error:", message)
 
+      // Revert interview status
       await db.update(forges).set({
-        status: previousStatus === "generating" ? "interviewing" : previousStatus,
+        status: "interviewing",
         updatedAt: new Date(),
-      }).where(eq(forges.id, forgeId))
+      }).where(eq(forges.workspaceId, workspaceId))
 
       await stream.writeSSE({
         data: JSON.stringify({ type: "error", message }),
@@ -242,61 +289,74 @@ app.post("/:forgeId/generate-tool-stream", async (c) => {
 
 // ============ Get Tool Config ============
 
-app.get("/:forgeId/tool", async (c) => {
-  const { forgeId } = c.req.param()
+app.get("/:workspaceId/tool", async (c) => {
+  const { workspaceId } = c.req.param()
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
-  if (!forge.toolConfig) return c.json({ error: "Tool not generated yet" }, 400)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
+  if (!workspace.toolConfig) return c.json({ error: "Tool not generated yet" }, 400)
+
+  const expert = await getWorkspaceExpertInfo(workspaceId)
 
   return c.json({
-    forge: {
-      id: forge.id,
-      title: forge.title,
-      expertName: forge.expertName!,
-      domain: forge.domain!,
-      targetAudience: forge.targetAudience,
+    workspace: {
+      id: workspace.id,
+      title: workspace.title,
+      expertName: expert.expertName,
+      domain: expert.domain,
+      targetAudience: expert.targetAudience,
     },
-    toolConfig: forge.toolConfig,
+    toolConfig: workspace.toolConfig,
   })
 })
 
 // ============ Ask the Expert (Cascading Context) ============
 
-app.post("/:forgeId/tool/ask", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/tool/ask", async (c) => {
+  const { workspaceId } = c.req.param()
   const { question, userContext, componentContext } = await c.req.json()
 
   if (!question) return c.json({ error: "question is required" }, 400)
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  const expertKnowledge = await loadExpertKnowledge(forgeId, question, 15)
+  const expert = await getWorkspaceExpertInfo(workspaceId)
+  const expertKnowledge = await loadExpertKnowledge(workspaceId, question, 15)
 
   const allDocuments = await db.select().from(documents)
-    .where(eq(documents.forgeId, forgeId))
+    .where(eq(documents.workspaceId, workspaceId))
     .orderBy(asc(documents.createdAt))
   const documentContext = allDocuments.length > 0
     ? `\n\nSUPPORTING DOCUMENTS:\n${allDocuments.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 5000)}`).join("\n\n")}`
     : ""
 
-  const metadata = (forge.metadata as any) || {}
-  const voiceTranscript = Array.isArray(metadata.voiceTranscript)
-    ? metadata.voiceTranscript.filter((m: any) => m.role === "user").slice(-20).map((m: any) => m.content).join("\n")
-    : ""
+  // Gather voice transcripts from all interviews
+  const allInterviews = await db.select({ metadata: forges.metadata }).from(forges)
+    .where(eq(forges.workspaceId, workspaceId))
+  let voiceTranscript = ""
+  for (const interview of allInterviews) {
+    const meta = (interview.metadata as any) || {}
+    if (Array.isArray(meta.voiceTranscript)) {
+      voiceTranscript += meta.voiceTranscript
+        .filter((m: any) => m.role === "user")
+        .slice(-10)
+        .map((m: any) => m.content)
+        .join("\n") + "\n"
+    }
+  }
   const transcriptContext = voiceTranscript
-    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript}`
+    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript.trim()}`
     : ""
 
   // Build cascading context (5 layers)
-  const system = `You are an AI assistant that channels the expertise of ${forge.expertName} in ${forge.domain}.
+  const system = `You are an AI assistant that channels the expertise of ${expert.expertName} in ${expert.domain}.
 
 LAYER 1 - DOMAIN CONTEXT:
-${forge.domain}. ${forge.targetAudience ? `This tool is designed for: ${forge.targetAudience}` : ""}
+${expert.domain}. ${expert.targetAudience ? `This tool is designed for: ${expert.targetAudience}` : ""}
 
 LAYER 2 - EXPERT KNOWLEDGE:
-The following knowledge was extracted directly from ${forge.expertName}:
+The following knowledge was extracted directly from ${expert.expertName}:
 ${expertKnowledge}${transcriptContext}${documentContext}
 
 LAYER 3 - TOOL CONTEXT:
@@ -309,7 +369,7 @@ LAYER 5 - CURRENT QUESTION:
 The user is asking: ${question}
 
 Instructions:
-- Answer as if you are ${forge.expertName} sharing their expertise
+- Answer as if you are ${expert.expertName} sharing their expertise
 - Be specific, practical, and actionable
 - Reference the expert's actual knowledge and numbers when relevant
 - If the expert's knowledge doesn't cover this question, say so honestly
@@ -326,39 +386,50 @@ Instructions:
 
 // ============ Structured Advice (SSE Stream) ============
 
-app.post("/:forgeId/tool/advice", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/tool/advice", async (c) => {
+  const { workspaceId } = c.req.param()
   const { question, userContext, componentContext } = await c.req.json()
 
   if (!question) return c.json({ error: "question is required" }, 400)
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  const expertKnowledge = await loadExpertKnowledge(forgeId, question, 15)
+  const expert = await getWorkspaceExpertInfo(workspaceId)
+  const expertKnowledge = await loadExpertKnowledge(workspaceId, question, 15)
 
   const allDocuments = await db.select().from(documents)
-    .where(eq(documents.forgeId, forgeId))
+    .where(eq(documents.workspaceId, workspaceId))
     .orderBy(asc(documents.createdAt))
   const documentContext = allDocuments.length > 0
     ? `\n\nSUPPORTING DOCUMENTS:\n${allDocuments.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 5000)}`).join("\n\n")}`
     : ""
 
-  const metadata = (forge.metadata as any) || {}
-  const voiceTranscript = Array.isArray(metadata.voiceTranscript)
-    ? metadata.voiceTranscript.filter((m: any) => m.role === "user").slice(-20).map((m: any) => m.content).join("\n")
-    : ""
+  // Gather voice transcripts from all interviews
+  const allInterviews = await db.select({ metadata: forges.metadata }).from(forges)
+    .where(eq(forges.workspaceId, workspaceId))
+  let voiceTranscript = ""
+  for (const interview of allInterviews) {
+    const meta = (interview.metadata as any) || {}
+    if (Array.isArray(meta.voiceTranscript)) {
+      voiceTranscript += meta.voiceTranscript
+        .filter((m: any) => m.role === "user")
+        .slice(-10)
+        .map((m: any) => m.content)
+        .join("\n") + "\n"
+    }
+  }
   const transcriptContext = voiceTranscript
-    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript}`
+    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript.trim()}`
     : ""
 
-  const contextPreamble = `You are an AI assistant that channels the expertise of ${forge.expertName} in ${forge.domain}.
+  const contextPreamble = `You are an AI assistant that channels the expertise of ${expert.expertName} in ${expert.domain}.
 
 LAYER 1 - DOMAIN CONTEXT:
-${forge.domain}. ${forge.targetAudience ? `This tool is designed for: ${forge.targetAudience}` : ""}
+${expert.domain}. ${expert.targetAudience ? `This tool is designed for: ${expert.targetAudience}` : ""}
 
 LAYER 2 - EXPERT KNOWLEDGE:
-The following knowledge was extracted directly from ${forge.expertName}:
+The following knowledge was extracted directly from ${expert.expertName}:
 ${expertKnowledge}${transcriptContext}${documentContext}
 
 LAYER 3 - TOOL CONTEXT:
@@ -369,8 +440,7 @@ ${userContext ? `About the user: ${JSON.stringify(userContext)}` : "No specific 
 
   return streamSSE(c, async (stream) => {
     try {
-      // Step 1: Structure call (Haiku, fast) - get advice outline
-      console.log(`[tool/advice] Step 1: outline for ${forgeId}`)
+      console.log(`[tool/advice] Step 1: outline for workspace ${workspaceId}`)
       const outline = await generateJSON<{
         sections: Array<{ title: string; description: string }>
       }>(
@@ -393,8 +463,8 @@ Each section should cover a distinct aspect of the advice. Return JSON:
         data: JSON.stringify({ type: "outline", sections: outline.sections }),
       })
 
-      // Step 2: Content calls (parallel, default model) - fill in each section
       console.log(`[tool/advice] Step 2: generating ${outline.sections.length} sections in parallel`)
+      const sectionContents: string[] = new Array(outline.sections.length).fill("")
       await Promise.all(
         outline.sections.map(async (section, index) => {
           const content = await generateText(
@@ -408,7 +478,7 @@ SECTION: ${section.title}
 DESCRIPTION: ${section.description}
 
 Instructions:
-- Answer as if you are ${forge.expertName} sharing their expertise
+- Answer as if you are ${expert.expertName} sharing their expertise
 - Be specific, practical, and actionable
 - Reference the expert's actual knowledge and numbers when relevant
 - If the expert's knowledge doesn't cover this, say so honestly
@@ -418,6 +488,7 @@ Instructions:
             { temperature: 0.4, maxTokens: 2048 }
           )
 
+          sectionContents[index] = content
           await stream.writeSSE({
             data: JSON.stringify({ type: "section", index, content }),
           })
@@ -425,10 +496,17 @@ Instructions:
         })
       )
 
+      const [saved] = await db.insert(toolAdvice).values({
+        workspaceId,
+        question,
+        userContext: userContext ?? null,
+        sections: outline.sections.map((s, i) => ({ ...s, content: sectionContents[i] })),
+      }).returning({ id: toolAdvice.id })
+
       await stream.writeSSE({
-        data: JSON.stringify({ type: "complete" }),
+        data: JSON.stringify({ type: "complete", adviceId: saved.id }),
       })
-      console.log(`[tool/advice] Complete for ${forgeId}`)
+      console.log(`[tool/advice] Complete for workspace ${workspaceId}, saved as ${saved.id}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error"
       console.error("[tool/advice] Error:", message)
@@ -439,32 +517,24 @@ Instructions:
   })
 })
 
+// ============ Saved Advice ============
+
+app.get("/:workspaceId/tool/advice", async (c) => {
+  const { workspaceId } = c.req.param()
+  const items = await db.select().from(toolAdvice)
+    .where(eq(toolAdvice.workspaceId, workspaceId))
+    .orderBy(asc(toolAdvice.createdAt))
+  return c.json({ advice: items })
+})
+
 // ============ Tool Voice Session (Shared Agent) ============
 
 const ELEVENLABS_AGENT_ID = process.env.ELEVENLABS_AGENT_ID
 
-function buildComponentSummary(layout: Array<Record<string, any>>): string {
-  return layout.map((c) => {
-    const base = `- ${c.id} (${c.type}): "${c.title}"`
-    switch (c.type) {
-      case 'checklist':
-        return `${base}\n  Items: ${(c.items || []).map((i: any) => `${i.id}="${i.text}"`).join(', ')}\n  Checked: [${(c.checkedIds || []).join(', ')}]`
-      case 'question_flow':
-        return `${base}\n  Questions: ${(c.questions || []).map((q: any) => `${q.id}="${q.text}" (${q.inputType}${q.options ? ': ' + q.options.join('/') : ''})`).join('; ')}`
-      case 'decision_tree':
-        return `${base}\n  Nodes: ${(c.nodes || []).map((n: any) => `${n.id}="${n.question}" [${(n.options || []).map((o: any, i: number) => `${i}:"${o.label}"`).join(', ')}]`).join('; ')}`
-      case 'step_by_step':
-        return `${base}\n  Steps: ${(c.steps || []).map((s: any) => `${s.id}="${s.title}"`).join(', ')}\n  Completed: [${(c.completedSteps || []).join(', ')}]`
-      case 'calculator':
-        return `${base}\n  Inputs: ${(c.inputs || []).map((i: any) => `${i.id}="${i.label}" (${i.type})`).join(', ')}`
-      default:
-        return base
-    }
-  }).join('\n')
-}
+// buildComponentSummary replaced by shared buildComponentPromptSummary
 
-app.post("/:forgeId/tool/voice-session", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/tool/voice-session", async (c) => {
+  const { workspaceId } = c.req.param()
 
   if (!ELEVENLABS_AGENT_ID) {
     return c.json({ error: "ELEVENLABS_AGENT_ID not configured" }, 500)
@@ -476,28 +546,28 @@ app.post("/:forgeId/tool/voice-session", async (c) => {
     if (body?.mode) mode = body.mode
   } catch {}
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  const expertKnowledge = await loadExpertKnowledge(forgeId, forge.domain!, 50)
+  const expert = await getWorkspaceExpertInfo(workspaceId)
+  const expertKnowledge = await loadExpertKnowledge(workspaceId, expert.domain, 50)
 
   const allDocuments = await db.select().from(documents)
-    .where(eq(documents.forgeId, forgeId))
+    .where(eq(documents.workspaceId, workspaceId))
   const docContext = allDocuments.length > 0
     ? `\n\nSUPPORTING DOCUMENTS:\n${allDocuments.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 3000)}`).join("\n\n")}`
     : ""
 
-  const toolConfig = forge.toolConfig as any
+  const toolConfig = workspace.toolConfig as any
   const layout = toolConfig?.layout || []
 
   let prompt: string
   let firstMessage: string
 
   if (mode === "chat") {
-    // Chat mode: knowledge-first, can suggest sections but doesn't manipulate them
     const sectionList = layout.map((c: any) => `- "${c.title}" (${c.type})`).join("\n")
 
-    prompt = `You are ${forge.expertName}, an expert in ${forge.domain}. You are having a conversation with someone who wants to learn from your expertise.${forge.targetAudience ? ` Your audience is: ${forge.targetAudience}.` : ''}
+    prompt = `You are ${expert.expertName}, an expert in ${expert.domain}. You are having a conversation with someone who wants to learn from your expertise.${expert.targetAudience ? ` Your audience is: ${expert.targetAudience}.` : ''}
 
 EXPERT KNOWLEDGE (your primary resource):
 ${expertKnowledge}${docContext}
@@ -505,7 +575,7 @@ ${expertKnowledge}${docContext}
 The user has an interactive guide with these sections:
 ${sectionList}
 
-You can suggest the user check out a specific section when relevant by calling navigate_to_section with the section's component_id. But your main role is sharing expertise - answer questions, give advice, and have a natural conversation about ${forge.domain}.
+You can suggest the user check out a specific section when relevant by calling navigate_to_section with the section's component_id. But your main role is sharing expertise - answer questions, give advice, and have a natural conversation about ${expert.domain}.
 
 CONVERSATION STYLE:
 - Be warm, conversational, and concise
@@ -514,12 +584,11 @@ CONVERSATION STYLE:
 - Reference specific facts, numbers, and insights from the expert knowledge above
 - If something is beyond your knowledge, say so honestly`
 
-    firstMessage = `Hi! I'm here as your ${forge.domain} expert, drawing on ${forge.expertName}'s knowledge. What would you like to know?`
+    firstMessage = `Hi! I'm here as your ${expert.domain} expert, drawing on ${expert.expertName}'s knowledge. What would you like to know?`
   } else {
-    // Widget mode: interactive, can manipulate components directly
-    const componentSummary = buildComponentSummary(layout)
+    const componentSummary = buildComponentPromptSummary(layout)
 
-    prompt = `You are ${forge.expertName}, an expert in ${forge.domain}. You are having a conversation with someone who wants to learn from your expertise.${forge.targetAudience ? ` Your audience is: ${forge.targetAudience}.` : ''}
+    prompt = `You are ${expert.expertName}, an expert in ${expert.domain}. You are having a conversation with someone who wants to learn from your expertise.${expert.targetAudience ? ` Your audience is: ${expert.targetAudience}.` : ''}
 
 EXPERT KNOWLEDGE (your primary resource):
 ${expertKnowledge}${docContext}
@@ -530,15 +599,7 @@ AVAILABLE COMPONENTS (use exact IDs when calling tools):
 ${componentSummary}
 
 TOOL USAGE RULES:
-- When the user mentions completing, checking off, or having done checklist items, call toggle_checklist_items. Match their description to the item IDs listed above.
-- When the user answers a question in a question flow, call answer_question. For select questions, match their words to the closest option.
-- When the user chooses a path in a decision tree, call select_decision_option with the matching option_index.
-- When the user says they've completed a step, call complete_step.
-- When the user provides a number for a calculator, call set_calculator_value.
-- When a section feels complete or the user wants to move on, call navigate_to_section.
-- For general questions about ${forge.domain}, just answer conversationally using expert knowledge.
-- Always use the exact component IDs and item/question/step IDs from the listing above.
-- After calling a tool, briefly confirm what you updated.
+${buildToolUsageRules(expert.domain)}
 
 CONVERSATION STYLE:
 - Be warm, conversational, and concise
@@ -546,7 +607,7 @@ CONVERSATION STYLE:
 - Reference specific facts, numbers, and insights from the expert knowledge above
 - If something is beyond your knowledge, say so honestly`
 
-    firstMessage = `Hi! I'm here as your ${forge.domain} expert, drawing on ${forge.expertName}'s knowledge. What would you like to know?`
+    firstMessage = `Hi! I'm here as your ${expert.domain} expert, drawing on ${expert.expertName}'s knowledge. What would you like to know?`
   }
 
   return c.json({
@@ -558,31 +619,41 @@ CONVERSATION STYLE:
 
 // ============ Refine Tool via Conversation (Opus Conductor) ============
 
-app.post("/:forgeId/tool/refine", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/tool/refine", async (c) => {
+  const { workspaceId } = c.req.param()
   const { message, activeComponentId, layout, userContext } = await c.req.json()
 
   if (!message) return c.json({ error: "message is required" }, 400)
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  const expertKnowledge = await loadExpertKnowledge(forgeId, message, 20)
+  const expert = await getWorkspaceExpertInfo(workspaceId)
+  const expertKnowledge = await loadExpertKnowledge(workspaceId, message, 20)
 
   // Load supporting documents and voice transcript for richer context
   const allDocuments = await db.select().from(documents)
-    .where(eq(documents.forgeId, forgeId))
+    .where(eq(documents.workspaceId, workspaceId))
     .orderBy(asc(documents.createdAt))
   const documentContext = allDocuments.length > 0
     ? `\n\nSUPPORTING DOCUMENTS:\n${allDocuments.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 5000)}`).join("\n\n")}`
     : ""
 
-  const metadata = (forge.metadata as any) || {}
-  const voiceTranscript = Array.isArray(metadata.voiceTranscript)
-    ? metadata.voiceTranscript.filter((m: any) => m.role === "user").slice(-20).map((m: any) => m.content).join("\n")
-    : ""
+  const allInterviews = await db.select({ metadata: forges.metadata }).from(forges)
+    .where(eq(forges.workspaceId, workspaceId))
+  let voiceTranscript = ""
+  for (const interview of allInterviews) {
+    const meta = (interview.metadata as any) || {}
+    if (Array.isArray(meta.voiceTranscript)) {
+      voiceTranscript += meta.voiceTranscript
+        .filter((m: any) => m.role === "user")
+        .slice(-10)
+        .map((m: any) => m.content)
+        .join("\n") + "\n"
+    }
+  }
   const transcriptContext = voiceTranscript
-    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript}`
+    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript.trim()}`
     : ""
 
   // Find the active component config
@@ -593,7 +664,7 @@ app.post("/:forgeId/tool/refine", async (c) => {
     .map((c: any) => `- ${c.id} (${c.type}): ${c.title}`)
     .join("\n")
 
-  const system = `You are channeling ${forge.expertName}'s expertise in ${forge.domain}. Your primary role is sharing knowledge and answering questions as ${forge.expertName} would.${forge.targetAudience ? ` Your audience is: ${forge.targetAudience}.` : ''}
+  const system = `You are channeling ${expert.expertName}'s expertise in ${expert.domain}. Your primary role is sharing knowledge and answering questions as ${expert.expertName} would.${expert.targetAudience ? ` Your audience is: ${expert.targetAudience}.` : ''}
 
 You also manage an interactive tool built from this expertise. When appropriate, you can:
 1. Update tool components based on what the user says
@@ -656,16 +727,16 @@ If no component update is needed, omit the "action" field entirely. Return ONLY 
     )
 
     // If there's an update, also persist it to the database
-    if (result.action?.updatedConfig && forge.toolConfig) {
-      const currentConfig = forge.toolConfig as any
+    if (result.action?.updatedConfig && workspace.toolConfig) {
+      const currentConfig = workspace.toolConfig as any
       const targetId = result.action.navigateToComponentId || activeComponentId
       const updatedLayout = currentConfig.layout.map((c: any) =>
         c.id === targetId ? result.action!.updatedConfig : c
       )
-      await db.update(forges).set({
+      await db.update(workspaces).set({
         toolConfig: { ...currentConfig, layout: updatedLayout },
         updatedAt: new Date(),
-      }).where(eq(forges.id, forgeId))
+      }).where(eq(workspaces.id, workspaceId))
     }
 
     return c.json(result)
@@ -677,51 +748,53 @@ If no component update is needed, omit the "action" field entirely. Return ONLY 
 
 // ============ Update Tool Config (Inline Editing) ============
 
-app.patch("/:forgeId/tool-config", async (c) => {
-  const { forgeId } = c.req.param()
+app.patch("/:workspaceId/tool-config", async (c) => {
+  const { workspaceId } = c.req.param()
   const { layout } = await c.req.json()
 
   if (!layout || !Array.isArray(layout)) {
     return c.json({ error: "layout array is required" }, 400)
   }
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
-  if (!forge.toolConfig) return c.json({ error: "No tool config to update" }, 400)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
+  if (!workspace.toolConfig) return c.json({ error: "No tool config to update" }, 400)
 
-  const updatedConfig = { ...(forge.toolConfig as any), layout }
+  const updatedConfig = { ...(workspace.toolConfig as any), layout }
 
-  await db.update(forges).set({
+  await db.update(workspaces).set({
     toolConfig: updatedConfig,
     updatedAt: new Date(),
-  }).where(eq(forges.id, forgeId))
+  }).where(eq(workspaces.id, workspaceId))
 
   return c.json({ ok: true })
 })
 
 // ============ Integrate New Knowledge into Existing Tool ============
 
-app.post("/:forgeId/integrate-knowledge", async (c) => {
-  const { forgeId } = c.req.param()
-  const { round } = await c.req.json()
+app.post("/:workspaceId/integrate-knowledge", async (c) => {
+  const { workspaceId } = c.req.param()
+  const { forgeId } = await c.req.json()
 
-  if (!round) return c.json({ error: "round is required" }, 400)
+  if (!forgeId) return c.json({ error: "forgeId is required" }, 400)
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
-  if (!forge.toolConfig) return c.json({ error: "No tool config to update" }, 400)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
+  if (!workspace.toolConfig) return c.json({ error: "No tool config to update" }, 400)
 
-  // Load new extractions from this round
+  const expert = await getWorkspaceExpertInfo(workspaceId)
+
+  // Load extractions from the specified interview
   const newExtractions = await db.select().from(extractions)
-    .where(and(eq(extractions.forgeId, forgeId), eq(extractions.round, round)))
+    .where(eq(extractions.forgeId, forgeId))
     .orderBy(asc(extractions.createdAt))
 
   if (newExtractions.length === 0) {
-    return c.json({ error: "No extractions found for this round" }, 400)
+    return c.json({ error: "No extractions found for this interview" }, 400)
   }
 
   const newKnowledge = newExtractions.map(e => `[${e.type}] ${e.content}`).join("\n")
-  const toolConfig = forge.toolConfig as any
+  const toolConfig = workspace.toolConfig as any
   const existingComponents = (toolConfig.layout || []).map((c: any) => ({
     id: c.id,
     type: c.type,
@@ -745,10 +818,10 @@ app.post("/:forgeId/integrate-knowledge", async (c) => {
   }>(
     `Analyze new follow-up interview knowledge and propose updates to an existing interactive tool.
 
-EXPERT: ${forge.expertName}
-DOMAIN: ${forge.domain}
+EXPERT: ${expert.expertName}
+DOMAIN: ${expert.domain}
 
-NEW KNOWLEDGE (from follow-up interview round ${round}):
+NEW KNOWLEDGE (from follow-up interview):
 ${newKnowledge}
 
 EXISTING TOOL COMPONENTS:
@@ -780,39 +853,117 @@ Return JSON: { "proposals": [{ "type": "update"|"new", "componentId": "existing_
 
 // ============ Apply Knowledge Integration Updates ============
 
-app.post("/:forgeId/apply-updates", async (c) => {
-  const { forgeId } = c.req.param()
+app.post("/:workspaceId/apply-updates", async (c) => {
+  const { workspaceId } = c.req.param()
   const { proposals } = await c.req.json()
 
   if (!proposals || !Array.isArray(proposals)) {
     return c.json({ error: "proposals array is required" }, 400)
   }
 
-  const forge = await getForge(forgeId)
-  if (!forge) return c.json({ error: "Forge not found" }, 404)
-  if (!forge.toolConfig) return c.json({ error: "No tool config to update" }, 400)
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
+  if (!workspace.toolConfig) return c.json({ error: "No tool config to update" }, 400)
 
-  const currentConfig = forge.toolConfig as any
+  const currentConfig = workspace.toolConfig as any
   let layout = [...currentConfig.layout]
 
+  const applied: string[] = []
+  const rejected: Array<{ title: string; errors: string[] }> = []
+
   for (const proposal of proposals) {
+    const { valid, errors } = validateComponentConfig(proposal.preview)
+    if (!valid) {
+      rejected.push({ title: proposal.title || "untitled", errors })
+      continue
+    }
     if (proposal.type === "update" && proposal.componentId) {
-      // Replace matching component
+      const existing = layout.find((c: any) => c.id === proposal.componentId)
+      if (!existing) {
+        rejected.push({ title: proposal.title || "untitled", errors: [`no component with id ${proposal.componentId}`] })
+        continue
+      }
+      if (proposal.preview.type !== existing.type || proposal.preview.id !== existing.id) {
+        rejected.push({ title: proposal.title || "untitled", errors: ["update must keep the component's id and type"] })
+        continue
+      }
       layout = layout.map((c: any) =>
         c.id === proposal.componentId ? proposal.preview : c
       )
+      applied.push(proposal.title || proposal.componentId)
     } else if (proposal.type === "new" && proposal.preview) {
-      // Append new component
+      if (layout.some((c: any) => c.id === proposal.preview.id)) {
+        rejected.push({ title: proposal.title || "untitled", errors: [`duplicate component id ${proposal.preview.id}`] })
+        continue
+      }
       layout.push(proposal.preview)
+      applied.push(proposal.title || proposal.preview.id)
     }
   }
 
-  await db.update(forges).set({
-    toolConfig: { ...currentConfig, layout },
-    updatedAt: new Date(),
-  }).where(eq(forges.id, forgeId))
+  if (applied.length > 0) {
+    await db.update(workspaces).set({
+      toolConfig: { ...currentConfig, layout },
+      updatedAt: new Date(),
+    }).where(eq(workspaces.id, workspaceId))
+  }
 
-  return c.json({ ok: true })
+  return c.json({ ok: true, applied, rejected })
+})
+
+// ============ Generate Single Component ============
+
+app.post("/:workspaceId/generate-component", async (c) => {
+  const { workspaceId } = c.req.param()
+
+  const workspace = await getWorkspace(workspaceId)
+  if (!workspace) return c.json({ error: "Workspace not found" }, 404)
+
+  const body = await c.req.json()
+  const { type, focus, outline } = body
+  if (!type || !focus) {
+    return c.json({ error: "type and focus are required" }, 400)
+  }
+
+  const expert = await getWorkspaceExpertInfo(workspaceId)
+  const extractionItems = await loadWorkspaceExtractions(workspaceId)
+  if (extractionItems.length === 0) {
+    return c.json({ error: "No knowledge extracted yet. Complete an interview first." }, 400)
+  }
+
+  const docItems = await loadWorkspaceDocuments(workspaceId)
+  const knowledgeSummary = buildKnowledgeSummary(extractionItems)
+  const documentSection = buildDocumentSection(docItems)
+
+  // Determine index from existing layout
+  const currentConfig = (workspace.toolConfig as any) || null
+  const existingLayout: Array<Record<string, unknown>> = currentConfig?.layout || []
+  const index = existingLayout.length
+
+  const spec = deriveComponentSpec({ type, focus }, index)
+  console.log(`[generate-component] Generating ${spec.type}: ${spec.title} for workspace ${workspaceId}`)
+
+  try {
+    const component = await generateComponent(spec, knowledgeSummary, documentSection, expert.expertName, expert.domain)
+
+    // Append to existing layout or create new toolConfig
+    const newLayout = [...existingLayout, component]
+    const toolConfig = currentConfig
+      ? { ...currentConfig, layout: newLayout }
+      : { title: `${expert.expertName}'s ${expert.domain} Guide`, description: "", theme: { primaryColor: "#f97316", accentColor: "#fb923c", icon: "Lightbulb" }, layout: newLayout }
+
+    await db.update(workspaces).set({
+      toolConfig: toolConfig as any,
+      updatedAt: new Date(),
+    }).where(eq(workspaces.id, workspaceId))
+
+    console.log(`[generate-component] Complete for workspace ${workspaceId}`)
+    return c.json(component)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error"
+    console.error("[generate-component] Error:", message)
+    return c.json({ error: `Component generation failed: ${message}` }, 500)
+  }
 })
 
 export default app

@@ -13,47 +13,48 @@ import {
   Globe,
   ChevronRight,
 } from 'lucide-react'
-import { getDocuments, addDocument, deleteDocument, getForge, getToolConfig } from '../lib/api'
+import { getDocuments, addDocument, deleteDocument, getToolConfig } from '../lib/api'
+import { useRegisterInteraction } from '../lib/InteractionContext'
+import { DOCUMENT_UPLOAD_PAGE } from '../lib/pageInteractions'
 
 export default function DocumentUploadPage() {
-  const { forgeId } = useParams<{ forgeId: string }>()
+  const { workspaceId } = useParams<{ workspaceId: string }>()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const [inputMode, setInputMode] = useState<'text' | 'url'>('text')
   const [title, setTitle] = useState('')
   const [content, setContent] = useState('')
 
-  const { data: forge } = useQuery({
-    queryKey: ['forge', forgeId],
-    queryFn: () => getForge(forgeId!),
+  useRegisterInteraction('page:document-upload', DOCUMENT_UPLOAD_PAGE, {
+    inputMode: 'text', documentCount: 0, title: '',
   })
 
   const { data: existingTool } = useQuery({
-    queryKey: ['tool', forgeId],
-    queryFn: () => getToolConfig(forgeId!),
+    queryKey: ['tool', workspaceId],
+    queryFn: () => getToolConfig(workspaceId!),
     retry: false,
   })
 
   const hasExistingTool = !!existingTool
 
   const { data: docs = [], isLoading } = useQuery({
-    queryKey: ['documents', forgeId],
-    queryFn: () => getDocuments(forgeId!),
+    queryKey: ['documents', workspaceId],
+    queryFn: () => getDocuments(workspaceId!),
   })
 
   const addMutation = useMutation({
-    mutationFn: () => addDocument(forgeId!, { type: inputMode, title, content }),
+    mutationFn: () => addDocument(workspaceId!, { type: inputMode, title, content }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents', forgeId] })
+      queryClient.invalidateQueries({ queryKey: ['documents', workspaceId] })
       setTitle('')
       setContent('')
     },
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (docId: string) => deleteDocument(forgeId!, docId),
+    mutationFn: (docId: string) => deleteDocument(workspaceId!, docId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['documents', forgeId] })
+      queryClient.invalidateQueries({ queryKey: ['documents', workspaceId] })
     },
   })
 
@@ -65,14 +66,14 @@ export default function DocumentUploadPage() {
       <header className="sticky top-0 z-10 bg-slate-900/90 backdrop-blur-sm border-b border-slate-700/50">
         <div className="px-6 py-3 flex items-center gap-4">
           <Link
-            to={hasExistingTool ? `/forge/${forgeId}/tool` : `/forge/${forgeId}/interview`}
+            to={`/workspace/${workspaceId}`}
             className="text-slate-400 hover:text-white transition-colors"
           >
             <ArrowLeft className="w-5 h-5" />
           </Link>
           <div className="flex items-center gap-2">
             <Flame className="w-5 h-5 text-orange-400" />
-            <span className="font-medium">{forge?.expertName || 'Expert'}</span>
+            <span className="font-medium">Documents</span>
           </div>
           <span className="text-slate-500 text-sm ml-auto">Supporting Documents</span>
         </div>
@@ -203,17 +204,17 @@ export default function DocumentUploadPage() {
         {/* Continue button */}
         <div className="flex items-center justify-between pt-4 border-t border-slate-700/50">
           <Link
-            to={hasExistingTool ? `/forge/${forgeId}/tool` : `/forge/${forgeId}/interview`}
+            to={`/workspace/${workspaceId}`}
             className="text-sm text-slate-400 hover:text-slate-200 transition-colors"
           >
-            {hasExistingTool ? 'Back to Tool' : 'Back to Interview'}
+            Back to Workspace
           </Link>
           <button
-            onClick={() => navigate(`/forge/${forgeId}/tool`)}
+            onClick={() => navigate(`/workspace/${workspaceId}`)}
             className="flex items-center gap-2 px-6 py-3 bg-orange-600 hover:bg-orange-700  transition-colors font-medium"
           >
             <Sparkles className="w-5 h-5" />
-            {hasExistingTool ? 'Back to Tool' : 'Generate Interactive Tool'}
+            {hasExistingTool ? 'Back to Workspace' : 'Generate Interactive Tool'}
             <ChevronRight className="w-4 h-4" />
           </button>
         </div>

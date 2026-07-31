@@ -14,8 +14,27 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
 
 // ============ Types ============
 
+export interface Workspace {
+  id: string
+  title: string
+  description: string | null
+  toolConfig: unknown
+  knowledgeBase: unknown
+  metadata: Record<string, unknown> | null
+  createdAt: string
+  updatedAt: string
+  // Populated on detail fetch
+  interviews?: Forge[]
+  // Populated on list fetch
+  interviewCount?: number
+  latestStatus?: string
+  expertName?: string | null
+  domain?: string | null
+}
+
 export interface Forge {
   id: string
+  workspaceId: string
   title: string
   expertName: string | null
   expertBio: string | null
@@ -24,8 +43,6 @@ export interface Forge {
   depth: string
   status: string
   interviewConfig: InterviewConfig | null
-  toolConfig: unknown
-  knowledgeBase: unknown
   metadata: Record<string, unknown> | null
   createdAt: string
   updatedAt: string
@@ -93,7 +110,35 @@ export interface InterviewState {
   currentRound?: number
 }
 
-// ============ Forge API ============
+// ============ Workspace API ============
+
+export function getWorkspaces(): Promise<Workspace[]> {
+  return request('/workspaces')
+}
+
+export function getWorkspace(id: string): Promise<Workspace> {
+  return request(`/workspaces/${id}`)
+}
+
+export function createWorkspace(title?: string): Promise<{ workspace: Workspace; interview: Forge }> {
+  return request('/workspaces', {
+    method: 'POST',
+    body: JSON.stringify({ title }),
+  })
+}
+
+export function deleteWorkspace(id: string): Promise<void> {
+  return request(`/workspaces/${id}`, { method: 'DELETE' })
+}
+
+export function updateWorkspaceExtractionTypes(workspaceId: string, customExtractionTypes: unknown[]): Promise<Workspace> {
+  return request(`/workspaces/${workspaceId}/extraction-types`, {
+    method: 'PUT',
+    body: JSON.stringify({ customExtractionTypes }),
+  })
+}
+
+// ============ Forge (Interview) API ============
 
 export function getForges(): Promise<Forge[]> {
   return request('/forges')
@@ -116,27 +161,6 @@ export function getPlanningNodes(data: {
 
 export function seedExtractions(forgeId: string): Promise<{ seeded: number }> {
   return request(`/forges/${forgeId}/seed-extractions`, { method: 'POST' })
-}
-
-export function createForge(data: {
-  title: string
-  expertName: string
-  expertBio?: string
-  domain: string
-  targetAudience?: string
-  depth?: string
-}): Promise<Forge> {
-  return request('/forges', {
-    method: 'POST',
-    body: JSON.stringify(data),
-  })
-}
-
-export function createDraftForge(): Promise<Forge> {
-  return request('/forges', {
-    method: 'POST',
-    body: JSON.stringify({ draft: true }),
-  })
 }
 
 export function deleteForge(id: string): Promise<void> {
@@ -281,10 +305,39 @@ export interface IntroFields {
   targetAudience: string | null
 }
 
+export interface ExpertProfile {
+  expertName: string | null
+  domain: string | null
+  targetAudience: string | null
+  yearsExperience: string | null
+  specializations: string[] | null
+  uniqueApproach: string | null
+  commonMistakes: string[] | null
+  notableAchievements: string[] | null
+  industriesOrContexts: string[] | null
+  passionArea: string | null
+  problemsTheySolve: string[] | null
+}
+
+export const EMPTY_EXPERT_PROFILE: ExpertProfile = {
+  expertName: null,
+  domain: null,
+  targetAudience: null,
+  yearsExperience: null,
+  specializations: null,
+  uniqueApproach: null,
+  commonMistakes: null,
+  notableAchievements: null,
+  industriesOrContexts: null,
+  passionArea: null,
+  problemsTheySolve: null,
+}
+
 export type IntroSSEEvent =
   | { type: 'chunk'; content: string }
   | { type: 'done' }
   | { type: 'intro_extracted'; fields: IntroFields }
+  | { type: 'profile_updated'; profile: ExpertProfile }
   | { type: 'error'; message: string }
 
 export function generateIntroOpening(forgeId: string): Promise<{ content: string }> {
@@ -375,13 +428,7 @@ export function planInterviewStream(
   )
 }
 
-// ============ Tool API ============
-
-export function generateTool(forgeId: string): Promise<Forge> {
-  return request(`/forges/${forgeId}/generate-tool`, { method: 'POST' })
-}
-
-// ============ Tool Plan Types ============
+// ============ Tool API (workspace-scoped) ============
 
 export interface ToolPlanComponent {
   type: string
@@ -399,11 +446,9 @@ export interface ToolPlan {
   components: ToolPlanComponent[]
 }
 
-export function planTool(forgeId: string): Promise<ToolPlan> {
-  return request(`/forges/${forgeId}/plan-tool`, { method: 'POST' })
+export function planTool(workspaceId: string): Promise<ToolPlan> {
+  return request(`/workspaces/${workspaceId}/plan-tool`, { method: 'POST' })
 }
-
-// ============ SSE Stream for Tool Generation ============
 
 export type GenerateEvent =
   | { type: 'plan'; title: string; componentCount: number; components: { type: string; title: string }[] }
@@ -414,14 +459,14 @@ export type GenerateEvent =
   | { type: 'error'; message: string }
 
 export function generateToolStream(
-  forgeId: string,
+  workspaceId: string,
   onEvent: (event: GenerateEvent) => void,
   onDone: () => void,
   onError: (error: string) => void,
   confirmedPlan?: ToolPlan
 ): AbortController {
   return streamSSE(
-    `${API_BASE}/forges/${forgeId}/generate-tool-stream`,
+    `${API_BASE}/workspaces/${workspaceId}/generate-tool-stream`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -434,7 +479,7 @@ export function generateToolStream(
 }
 
 export interface ToolConfigResponse {
-  forge: {
+  workspace: {
     id: string
     title: string
     expertName: string
@@ -450,27 +495,27 @@ export interface ToolConfigResponse {
   }
 }
 
-export function getToolConfig(forgeId: string): Promise<ToolConfigResponse> {
-  return request(`/forges/${forgeId}/tool`)
+export function getToolConfig(workspaceId: string): Promise<ToolConfigResponse> {
+  return request(`/workspaces/${workspaceId}/tool`)
 }
 
 export function updateToolConfig(
-  forgeId: string,
+  workspaceId: string,
   layout: Array<Record<string, unknown>>
 ): Promise<{ ok: boolean }> {
-  return request(`/forges/${forgeId}/tool-config`, {
+  return request(`/workspaces/${workspaceId}/tool-config`, {
     method: 'PATCH',
     body: JSON.stringify({ layout }),
   })
 }
 
 export function askExpert(
-  forgeId: string,
+  workspaceId: string,
   question: string,
   userContext?: Record<string, unknown>,
   componentContext?: string
 ): Promise<{ answer: string }> {
-  return request(`/forges/${forgeId}/tool/ask`, {
+  return request(`/workspaces/${workspaceId}/tool/ask`, {
     method: 'POST',
     body: JSON.stringify({ question, userContext, componentContext }),
   })
@@ -491,7 +536,7 @@ export type AdviceEvent =
   | { type: 'error'; message: string }
 
 export function streamAdvice(
-  forgeId: string,
+  workspaceId: string,
   question: string,
   userContext: Record<string, unknown> | undefined,
   componentContext: string | undefined,
@@ -500,7 +545,7 @@ export function streamAdvice(
   onError: (error: string) => void
 ): AbortController {
   return streamSSE(
-    `${API_BASE}/forges/${forgeId}/tool/advice`,
+    `${API_BASE}/workspaces/${workspaceId}/tool/advice`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -512,12 +557,12 @@ export function streamAdvice(
   )
 }
 
-export function getToolVoiceSession(forgeId: string, mode: 'widget' | 'chat' = 'widget'): Promise<{
+export function getToolVoiceSession(workspaceId: string, mode: 'widget' | 'chat' = 'widget'): Promise<{
   agentId: string
   prompt: string
   firstMessage: string
 }> {
-  return request(`/forges/${forgeId}/tool/voice-session`, {
+  return request(`/workspaces/${workspaceId}/tool/voice-session`, {
     method: 'POST',
     body: JSON.stringify({ mode }),
   })
@@ -533,23 +578,23 @@ export interface RefineResult {
 }
 
 export function refineTool(
-  forgeId: string,
+  workspaceId: string,
   message: string,
   activeComponentId: string | null,
   layout: Array<Record<string, unknown>>,
   userContext?: Record<string, unknown>
 ): Promise<RefineResult> {
-  return request(`/forges/${forgeId}/tool/refine`, {
+  return request(`/workspaces/${workspaceId}/tool/refine`, {
     method: 'POST',
     body: JSON.stringify({ message, activeComponentId, layout, userContext }),
   })
 }
 
-// ============ Documents API ============
+// ============ Documents API (workspace-scoped) ============
 
 export interface Document {
   id: string
-  forgeId: string
+  workspaceId: string
   type: 'text' | 'url'
   title: string
   content: string
@@ -557,33 +602,33 @@ export interface Document {
   createdAt: string
 }
 
-export function getDocuments(forgeId: string): Promise<Document[]> {
-  return request(`/forges/${forgeId}/documents`)
+export function getDocuments(workspaceId: string): Promise<Document[]> {
+  return request(`/workspaces/${workspaceId}/documents`)
 }
 
 export function addDocument(
-  forgeId: string,
+  workspaceId: string,
   data: { type: 'text' | 'url'; title: string; content: string }
 ): Promise<Document> {
-  return request(`/forges/${forgeId}/documents`, {
+  return request(`/workspaces/${workspaceId}/documents`, {
     method: 'POST',
     body: JSON.stringify(data),
   })
 }
 
 export function updateDocument(
-  forgeId: string,
+  workspaceId: string,
   docId: string,
   data: { title?: string; content?: string }
 ): Promise<Document> {
-  return request(`/forges/${forgeId}/documents/${docId}`, {
+  return request(`/workspaces/${workspaceId}/documents/${docId}`, {
     method: 'PATCH',
     body: JSON.stringify(data),
   })
 }
 
-export function deleteDocument(forgeId: string, docId: string): Promise<{ deleted: boolean }> {
-  return request(`/forges/${forgeId}/documents/${docId}`, {
+export function deleteDocument(workspaceId: string, docId: string): Promise<{ deleted: boolean }> {
+  return request(`/workspaces/${workspaceId}/documents/${docId}`, {
     method: 'DELETE',
   })
 }
@@ -650,7 +695,7 @@ export function startFollowUpStream(
   )
 }
 
-export function integrateKnowledge(forgeId: string, round: number): Promise<{
+export function integrateKnowledge(workspaceId: string, forgeId: string): Promise<{
   proposals: Array<{
     type: 'update' | 'new'
     componentId?: string
@@ -660,15 +705,35 @@ export function integrateKnowledge(forgeId: string, round: number): Promise<{
     preview: Record<string, unknown>
   }>
 }> {
-  return request(`/forges/${forgeId}/integrate-knowledge`, {
+  return request(`/workspaces/${workspaceId}/integrate-knowledge`, {
     method: 'POST',
-    body: JSON.stringify({ round }),
+    body: JSON.stringify({ forgeId }),
   })
 }
 
-export function applyToolUpdates(forgeId: string, proposals: Array<Record<string, unknown>>): Promise<{ ok: boolean }> {
-  return request(`/forges/${forgeId}/apply-updates`, {
+export function applyToolUpdates(workspaceId: string, proposals: Array<Record<string, unknown>>): Promise<{ ok: boolean }> {
+  return request(`/workspaces/${workspaceId}/apply-updates`, {
     method: 'POST',
     body: JSON.stringify({ proposals }),
+  })
+}
+
+export function generateSingleComponent(
+  workspaceId: string,
+  component: { type: string; focus: string; outline: string[] }
+): Promise<Record<string, unknown>> {
+  return request(`/workspaces/${workspaceId}/generate-component`, {
+    method: 'POST',
+    body: JSON.stringify(component),
+  })
+}
+
+export function createInterview(
+  workspaceId: string,
+  topic?: string
+): Promise<Forge> {
+  return request(`/workspaces/${workspaceId}/interviews`, {
+    method: 'POST',
+    body: JSON.stringify({ topic }),
   })
 }

@@ -1,35 +1,68 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { ArrowLeft, Flame, Loader2, Sparkles, Wrench, Check, RefreshCw, Pencil, Save, X, ChevronRight, Circle, CheckCircle, Trash2, ArrowUp, ArrowDown, Share2, Copy } from 'lucide-react'
+import { ArrowLeft, Flame, Loader2, Sparkles, Wrench, Check, RefreshCw, Pencil, Save, X, ChevronRight, Circle, CheckCircle, Trash2, ArrowUp, ArrowDown, Share2, Copy, Mic, MessageSquare, ArrowRight } from 'lucide-react'
+import { useRegisterInteraction } from '../lib/InteractionContext'
+import { WORKSPACE_PAGE_EARLY, WORKSPACE_PAGE_TOOL } from '../lib/pageInteractions'
 import KnowledgeConstellation from '../components/KnowledgeConstellation'
-import { streamAdvice, updateToolConfig, type ToolPlan, type ToolPlanComponent, type AdviceSection } from '../lib/api'
+import { streamAdvice, updateToolConfig, completeIntro, planInterviewStream, type ToolPlan, type ToolPlanComponent, type AdviceSection, type ExpertProfile, type PlanInterviewEvent } from '../lib/api'
 import { useToolDashboard } from '../hooks/useToolDashboard'
 import { useToolEditor } from '../hooks/useToolEditor'
 import { renderTabComponent, COMPONENT_TYPE_LABELS } from '../lib/renderComponent'
+import { isCaptured } from '../lib/profileFields'
+import type { CustomExtractionType } from '../lib/extractionTypes'
 import ChatSidebar from '../components/toolkit/ChatSidebar'
 import WorkspaceSidebar from '../components/workspace/WorkspaceSidebar'
 import DocumentsPanel from '../components/workspace/DocumentsPanel'
 import KnowledgePanel from '../components/workspace/KnowledgePanel'
 import InterviewSummaryPanel from '../components/workspace/InterviewSummaryPanel'
+import ProfileSummaryCard from '../components/workspace/ProfileSummaryCard'
+import ComponentCreator from '../components/workspace/ComponentCreator'
+import InterviewPlanningAnimation from '../components/InterviewPlanningAnimation'
+import type { PlanningState } from '../hooks/usePlanningAnimation'
 
-function loadSavedAdvice(forgeId: string): Record<string, AdviceSection[]> {
+function loadSavedAdvice(workspaceId: string): Record<string, AdviceSection[]> {
   try {
-    const raw = localStorage.getItem(`advice-${forgeId}`)
+    const raw = localStorage.getItem(`advice-${workspaceId}`)
     return raw ? JSON.parse(raw) : {}
   } catch { return {} }
 }
 
-function saveAdvice(forgeId: string, answers: Record<string, AdviceSection[]>) {
-  localStorage.setItem(`advice-${forgeId}`, JSON.stringify(answers))
+function saveAdvice(workspaceId: string, answers: Record<string, AdviceSection[]>) {
+  localStorage.setItem(`advice-${workspaceId}`, JSON.stringify(answers))
 }
 
-export default function ToolViewPage() {
-  const { forgeId } = useParams<{ forgeId: string }>()
+const EMPTY_PLANNING_STATE: PlanningState = {
+  stage: 'analysing',
+  domainContext: null,
+  extractionPriorities: [],
+  estimatedDuration: null,
+  sections: [],
+  forgeId: null,
+  errorMessage: null,
+  sectionsWithQuestions: 0,
+  formContext: null,
+  constellationNodes: [],
+}
+
+function getIntroProfile(metadata: Record<string, unknown> | undefined): ExpertProfile | null {
+  if (!metadata) return null
+  return (metadata.introProfile as ExpertProfile | undefined) ?? null
+}
+
+function getProfileStatus(profile: ExpertProfile | null): 'not_started' | 'in_progress' | 'complete' {
+  if (!profile) return 'not_started'
+  if (profile.expertName && profile.domain && profile.targetAudience) return 'complete'
+  const hasAny = Object.values(profile).some((v) => isCaptured(v))
+  return hasAny ? 'in_progress' : 'not_started'
+}
+
+export default function WorkspacePage() {
+  const { workspaceId } = useParams<{ workspaceId: string }>()
+  const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const autoGenerateRef = useRef(false)
   const [userContext, setUserContext] = useState<Record<string, unknown>>({})
-  const [expertAnswers, setExpertAnswers] = useState<Record<string, AdviceSection[]>>(() => loadSavedAdvice(forgeId!))
+  const [expertAnswers, setExpertAnswers] = useState<Record<string, AdviceSection[]>>(() => loadSavedAdvice(workspaceId!))
   const [loadingFlows, setLoadingFlows] = useState<Record<string, boolean>>({})
   const [showRegenModal, setShowRegenModal] = useState(false)
   const [regenConfirmText, setRegenConfirmText] = useState('')
@@ -55,14 +88,13 @@ export default function ToolViewPage() {
     handleTabChange,
     documents,
     extractions,
-    forge: forgeData,
+    workspace: workspaceData,
     constellationNodes,
     chats,
     createChat,
     deleteChat,
-    interviewRounds,
-    followUpSuggestions,
-  } = useToolDashboard(forgeId!)
+    interviews,
+  } = useToolDashboard(workspaceId!)
 
   const {
     editMode,
@@ -73,16 +105,121 @@ export default function ToolViewPage() {
     handleSave,
     handleCancel,
     handleToggleEdit,
-  } = useToolEditor(forgeId!, layout)
+  } = useToolEditor(workspaceId!, layout)
 
-  // Auto-plan tool if not yet created
+  const [introDepth, setIntroDepth] = useState<'quick' | 'standard' | 'deep'>('standard')
+  const [introPlanning, setIntroPlanning] = useState(false)
+  const [introPlanState, setIntroPlanState] = useState<PlanningState>(EMPTY_PLANNING_STATE)
+
+  // Detect early-stage workspace: first interview is draft and no tool data
+  // Must wait for workspaceData to load before deciding (interviews come from it)
+  const workspaceLoaded = !!workspaceData
+  const firstInterview = interviews[0]
+  const isEarlyStage = workspaceLoaded && !!firstInterview && firstInterview.status === 'draft' && !data
+
+  const customExtractionTypes = ((workspaceData?.metadata as Record<string, unknown>)?.customExtractionTypes ?? []) as CustomExtractionType[]
+  const introProfile = getIntroProfile(firstInterview?.metadata as Record<string, unknown> | undefined)
+  const profileHasCore3 = !!(introProfile?.expertName && introProfile?.domain && introProfile?.targetAudience)
+  const profileStatus = getProfileStatus(introProfile)
+
+  // For early-stage, treat 'overview' as 'profile'
+  const effectivePanel = isEarlyStage && activePanel.type === 'overview'
+    ? { type: 'profile' as const }
+    : activePanel
+
+  // Register page interaction context
+  const wsDescriptor = isEarlyStage ? WORKSPACE_PAGE_EARLY : WORKSPACE_PAGE_TOOL
+  const { updateState: updatePageState } = useRegisterInteraction(
+    `page:workspace:${workspaceId}`,
+    wsDescriptor,
+    { activePanel: activePanel.type },
+  )
+
+  // Sync page state
   useEffect(() => {
-    if (autoGenerateRef.current) return
-    if (isLoading) return
-    if (data) return
-    autoGenerateRef.current = true
-    startPlanning()
-  }, [isLoading, data])
+    const activeTab = tabs[activeTabIndex]
+    updatePageState({
+      activePanel: activePanel.type,
+      activeComponentTitle: activePanel.type === 'component' ? activeTab?.title : undefined,
+      profileStatus: isEarlyStage ? profileStatus : undefined,
+      toolTitle: data ? (data as any).toolConfig?.title : undefined,
+      overallProgress,
+      tabCount: tabs.length,
+      documentCount: documents.length,
+      extractionCount: extractions.length,
+    })
+  }, [activePanel.type, activeTabIndex, overallProgress, documents.length, extractions.length])
+
+
+  const handlePlanInterview = async () => {
+    if (!firstInterview) return
+    setIntroPlanning(true)
+    setIntroPlanState(EMPTY_PLANNING_STATE)
+
+    await completeIntro(firstInterview.id, introDepth)
+
+    planInterviewStream(
+      firstInterview.id,
+      (event: PlanInterviewEvent) => {
+        switch (event.type) {
+          case 'analysing':
+            setIntroPlanState((s) => ({ ...s, stage: 'analysing' }))
+            break
+          case 'skeleton':
+            setIntroPlanState((s) => ({
+              ...s,
+              stage: 'sections',
+              domainContext: event.domainContext,
+              extractionPriorities: event.extractionPriorities,
+              estimatedDuration: event.estimatedDurationMinutes,
+              sections: event.sections.map((sec) => ({
+                index: sec.index,
+                title: sec.title,
+                goal: sec.goal,
+                questions: [],
+                questionsReady: false,
+              })),
+            }))
+            break
+          case 'questions':
+            setIntroPlanState((s) => {
+              const sections = s.sections.map((sec) =>
+                sec.index === event.sectionIndex
+                  ? { ...sec, questions: event.questions, questionsReady: true }
+                  : sec
+              )
+              const readyCount = sections.filter((sec) => sec.questionsReady).length
+              const allReady = readyCount === sections.length
+              return {
+                ...s,
+                stage: allReady ? 'saving' : 'questions',
+                sections,
+                sectionsWithQuestions: readyCount,
+              }
+            })
+            break
+          case 'complete':
+            setIntroPlanState((s) => ({ ...s, stage: 'complete', forgeId: event.forgeId }))
+            setTimeout(() => {
+              setIntroPlanning(false)
+              navigate(`/workspace/${workspaceId}/interview/${firstInterview.id}`)
+            }, 1200)
+            break
+          case 'error':
+            setIntroPlanState((s) => ({ ...s, stage: 'error', errorMessage: event.message }))
+            break
+        }
+      },
+      () => {},
+      (error) => {
+        setIntroPlanState((s) => ({ ...s, stage: 'error', errorMessage: error }))
+      }
+    )
+  }
+
+  const handleNewInterview = () => {
+    setActivePanel({ type: 'interview' })
+  }
 
   const handleQuestionFlowComplete = async (
     componentId: string,
@@ -90,23 +227,20 @@ export default function ToolViewPage() {
     componentTitle: string
   ) => {
     setLoadingFlows((prev) => ({ ...prev, [componentId]: true }))
-    // Clear previous advice and start streaming
     setExpertAnswers((prev) => ({ ...prev, [componentId]: [] }))
 
     streamAdvice(
-      forgeId!,
+      workspaceId!,
       flowData.question,
       { ...userContext, flowAnswers: flowData.answers },
       componentTitle,
       (event) => {
         if (event.type === 'outline') {
-          // Create placeholder sections from outline
           setExpertAnswers((prev) => ({
             ...prev,
             [componentId]: event.sections.map((s) => ({ title: s.title, description: s.description, content: '' })),
           }))
         } else if (event.type === 'section') {
-          // Fill in content for completed section
           setExpertAnswers((prev) => {
             const sections = [...(prev[componentId] || [])]
             if (sections[event.index]) {
@@ -117,9 +251,8 @@ export default function ToolViewPage() {
         }
       },
       () => {
-        // Done - persist to localStorage
         setExpertAnswers((prev) => {
-          saveAdvice(forgeId!, prev)
+          saveAdvice(workspaceId!, prev)
           return prev
         })
         setLoadingFlows((prev) => ({ ...prev, [componentId]: false }))
@@ -141,14 +274,12 @@ export default function ToolViewPage() {
   const handleChatComponentUpdate = useCallback((componentId: string, config: Record<string, unknown>) => {
     const idx = editableLayout.findIndex((c) => c.id === componentId)
     if (idx === -1) return
-    // Update local state immediately
     updateComponent(idx, config)
-    // Persist to DB and refresh query so the sync effect doesn't revert
     const updatedLayout = editableLayout.map((c, i) => i === idx ? config : c)
-    updateToolConfig(forgeId!, updatedLayout).then(() => {
-      queryClient.invalidateQueries({ queryKey: ['tool', forgeId] })
+    updateToolConfig(workspaceId!, updatedLayout).then(() => {
+      queryClient.invalidateQueries({ queryKey: ['tool', workspaceId] })
     })
-  }, [editableLayout, forgeId, queryClient, updateComponent])
+  }, [editableLayout, workspaceId, queryClient, updateComponent])
 
   const handleChatNavigate = (componentId: string) => {
     const idx = tabs.findIndex((t) => t.id === componentId)
@@ -165,20 +296,172 @@ export default function ToolViewPage() {
     startPlanning()
   }
 
-  if (isLoading) {
+  if (isLoading || !workspaceLoaded) {
     return (
       <div className="h-screen flex items-center justify-center">
         <div className="flex items-center gap-3 text-slate-400">
           <Loader2 className="w-6 h-6 animate-spin" />
-          Loading tool...
+          Loading...
         </div>
       </div>
     )
   }
 
-  // Tool not generated yet - show planning/review/generating state
+  // Early-stage hub view
+  if (isEarlyStage) {
+    if (introPlanning) {
+      return (
+        <div className="max-w-2xl mx-auto p-8">
+          <Link to="/workspaces" className="flex items-center gap-2 text-slate-400 hover:text-white mb-8 transition-colors">
+            <ArrowLeft className="w-4 h-4" />
+            Back to Home
+          </Link>
+          <div className="mb-6">
+            <h2 className="text-lg font-semibold text-white mb-1">Planning Your Interview</h2>
+            {introProfile && (
+              <p className="text-slate-400 text-sm">
+                Building a custom interview for {introProfile.expertName} about {introProfile.domain}
+              </p>
+            )}
+          </div>
+          <InterviewPlanningAnimation state={introPlanState} onRetry={() => {
+            setIntroPlanning(false)
+            setIntroPlanState(EMPTY_PLANNING_STATE)
+          }} />
+        </div>
+      )
+    }
+
+    return (
+      <div className="h-screen flex flex-col">
+        <header className="sticky top-0 z-10 bg-slate-900/90 backdrop-blur-sm border-b border-slate-700/50 shrink-0">
+          <div className="px-6 py-3 flex items-center gap-4">
+            <Link to="/workspaces" className="text-slate-400 hover:text-white transition-colors">
+              <ArrowLeft className="w-5 h-5" />
+            </Link>
+            <div className="flex items-center gap-2">
+              <Flame className="w-5 h-5 text-orange-400" />
+              <span className="font-medium">{workspaceData?.title || 'Workspace'}</span>
+            </div>
+          </div>
+        </header>
+
+        <div className="flex-1 flex overflow-hidden">
+          <WorkspaceSidebar
+            tabs={[]}
+            documents={documents}
+            extractionCount={extractions.length}
+            chats={chats}
+            overallProgress={0}
+            activePanel={effectivePanel}
+            interviews={interviews}
+            workspaceId={workspaceId!}
+            showProfile
+            profileStatus={profileStatus}
+            onPanelChange={setActivePanel}
+            onAddDocument={() => setActivePanel({ type: 'documents' })}
+            onNewChat={createChat}
+            onDeleteChat={deleteChat}
+            onNewInterview={handleNewInterview}
+          />
+
+          <div className="flex-1 overflow-y-auto">
+            <div className="px-6 py-6">
+              {effectivePanel.type === 'profile' && !profileHasCore3 && (
+                <div className="flex items-center justify-center min-h-[60vh]">
+                  <div className="text-center max-w-lg">
+                    <h2 className="text-2xl font-bold text-white mb-3">Build Your Expert Profile</h2>
+                    <p className="text-slate-400 mb-8">
+                      Have a quick conversation so we can understand your expertise and build a tailored interview.
+                    </p>
+                    <div className="flex gap-4 justify-center">
+                      <button
+                        onClick={() => navigate(`/workspace/${workspaceId}/interview/${firstInterview.id}?mode=voice`)}
+                        className="flex flex-col items-center gap-3 px-8 py-6 bg-orange-600 hover:bg-orange-700 transition-colors"
+                      >
+                        <Mic className="w-8 h-8" />
+                        <span className="font-medium">Voice Conversation</span>
+                        <span className="text-xs text-orange-200">Speak naturally</span>
+                      </button>
+                      <button
+                        onClick={() => navigate(`/workspace/${workspaceId}/interview/${firstInterview.id}?mode=text`)}
+                        className="flex flex-col items-center gap-3 px-8 py-6 bg-slate-800 hover:bg-slate-700 border border-slate-600 transition-colors"
+                      >
+                        <MessageSquare className="w-8 h-8" />
+                        <span className="font-medium">Text Chat</span>
+                        <span className="text-xs text-slate-400">Type your answers</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {effectivePanel.type === 'profile' && profileHasCore3 && introProfile && (
+                <div>
+                  <ProfileSummaryCard
+                    profile={introProfile}
+                    onEdit={() => navigate(`/workspace/${workspaceId}/interview/${firstInterview.id}?mode=text`)}
+                  />
+
+                  <div className="mt-8 bg-slate-800/50 border border-slate-700/50 p-6">
+                    <h3 className="text-lg font-semibold text-white mb-4">Start Your Interview</h3>
+                    <p className="text-slate-400 text-sm mb-4">
+                      Your profile is ready. Choose interview depth and start the knowledge distillation interview.
+                    </p>
+                    <div className="flex items-center gap-3 mb-4">
+                      <label className="text-sm text-slate-400">Depth:</label>
+                      <div className="flex gap-1">
+                        {(['quick', 'standard', 'deep'] as const).map((d) => (
+                          <button
+                            key={d}
+                            onClick={() => setIntroDepth(d)}
+                            className={`px-4 py-1.5 text-sm transition-colors ${
+                              introDepth === d
+                                ? 'bg-orange-600 text-white'
+                                : 'bg-slate-800 text-slate-400 hover:text-white border border-slate-700'
+                            }`}
+                          >
+                            {d}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <button
+                      onClick={handlePlanInterview}
+                      className="flex items-center gap-2 px-6 py-3 bg-orange-600 hover:bg-orange-700 text-white font-medium transition-colors"
+                    >
+                      <ArrowRight className="w-5 h-5" />
+                      Start Your Interview
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {effectivePanel.type === 'documents' && (
+                <DocumentsPanel workspaceId={workspaceId!} />
+              )}
+
+              {effectivePanel.type === 'interview' && (
+                <InterviewSummaryPanel
+                  workspaceId={workspaceId!}
+                  interviews={interviews}
+                />
+              )}
+
+              {effectivePanel.type !== 'profile' && effectivePanel.type !== 'documents' && effectivePanel.type !== 'interview' && (
+                <div className="flex items-center justify-center min-h-[60vh]">
+                  <p className="text-slate-500">Complete your expert profile to get started.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Tool not generated yet - show workspace hub with generation CTA
   if (error || !data) {
-    // Plan review screen
     if (generationProgress?.step === 'reviewing' && generationProgress.plan) {
       return (
         <PlanReview
@@ -189,12 +472,103 @@ export default function ToolViewPage() {
       )
     }
 
+    // Active generation (planning/generating/error) — show fullscreen
+    if (generationProgress) {
+      return (
+        <GenerationStateView
+          generationProgress={generationProgress}
+          onStartPlanning={startPlanning}
+          constellationNodes={constellationNodes}
+        />
+      )
+    }
+
+    // No tool yet, no active generation — show workspace hub with sidebar
     return (
-      <GenerationStateView
-        generationProgress={generationProgress}
-        onStartPlanning={startPlanning}
-        constellationNodes={constellationNodes}
-      />
+      <div className="h-screen flex flex-col">
+        <header className="sticky top-0 z-10 bg-slate-900/90 backdrop-blur-sm border-b border-slate-700/50 shrink-0">
+          <div className="px-6 py-3 flex items-center gap-4">
+            <Link to="/workspaces" className="text-slate-400 hover:text-white transition-colors">
+              <ArrowLeft className="w-5 h-5" />
+            </Link>
+            <div className="flex items-center gap-2">
+              <Flame className="w-5 h-5 text-orange-400" />
+              <span className="font-medium">{workspaceData?.title || 'Workspace'}</span>
+            </div>
+          </div>
+        </header>
+
+        <div className="flex-1 flex overflow-hidden">
+          <WorkspaceSidebar
+            tabs={[]}
+            documents={documents}
+            extractionCount={extractions.length}
+            chats={chats}
+            overallProgress={0}
+            activePanel={activePanel}
+            interviews={interviews}
+            workspaceId={workspaceId!}
+            onPanelChange={setActivePanel}
+            onAddDocument={() => setActivePanel({ type: 'documents' })}
+            onNewChat={createChat}
+            onDeleteChat={deleteChat}
+            onNewInterview={handleNewInterview}
+          />
+
+          <div className="flex-1 overflow-y-auto">
+            <div className="px-6 py-6">
+              {activePanel.type === 'documents' && (
+                <DocumentsPanel workspaceId={workspaceId!} />
+              )}
+
+              {activePanel.type === 'knowledge' && (
+                <KnowledgePanel workspaceId={workspaceId!} extractions={extractions} customExtractionTypes={customExtractionTypes} />
+              )}
+
+              {activePanel.type === 'interview' && (
+                <InterviewSummaryPanel
+                  workspaceId={workspaceId!}
+                  interviews={interviews}
+                />
+              )}
+
+              {activePanel.type !== 'documents' && activePanel.type !== 'knowledge' && activePanel.type !== 'interview' && (
+                <div className="max-w-2xl mx-auto space-y-8">
+                  <ComponentCreator
+                    workspaceId={workspaceId!}
+                    onCreated={() => {
+                      // Switch to the newly created component tab
+                      setActivePanel({ type: 'overview' })
+                    }}
+                  />
+
+                  <div className="border-t border-slate-700/50 pt-6">
+                    <h3 className="text-lg font-semibold text-white mb-1">Start a New Interview</h3>
+                    <p className="text-sm text-slate-400 mb-3">Capture more expert knowledge on a specific topic.</p>
+                    <button
+                      onClick={() => setActivePanel({ type: 'interview' })}
+                      className="flex items-center gap-2 px-4 py-2 bg-orange-600 hover:bg-orange-700 text-sm font-medium text-white transition-colors"
+                    >
+                      <Mic className="w-4 h-4" />
+                      View Interviews
+                    </button>
+                  </div>
+
+                  <div className="border-t border-slate-700/50 pt-6">
+                    <button
+                      onClick={startPlanning}
+                      className="inline-flex items-center gap-2 px-4 py-2 text-sm text-slate-400 hover:text-white border border-slate-700/50 hover:border-orange-500/30 transition-colors"
+                    >
+                      <Sparkles className="w-4 h-4" />
+                      Generate all components at once
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     )
   }
 
@@ -209,7 +583,7 @@ export default function ToolViewPage() {
     )
   }
 
-  const { forge, toolConfig } = data
+  const { workspace, toolConfig } = data
   const activeTab = tabs[activeTabIndex]
 
   return (
@@ -217,7 +591,7 @@ export default function ToolViewPage() {
       {/* Header */}
       <header className="sticky top-0 z-10 bg-slate-900/90 backdrop-blur-sm border-b border-slate-700/50 shrink-0">
         <div className="px-6 py-3 flex items-center gap-4">
-          <Link to="/forges" className="text-slate-400 hover:text-white transition-colors">
+          <Link to="/workspaces" className="text-slate-400 hover:text-white transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </Link>
           <div className="flex items-center gap-2">
@@ -226,7 +600,7 @@ export default function ToolViewPage() {
           </div>
           <div className="ml-auto flex items-center gap-4">
             <span className="text-slate-500 text-sm hidden sm:inline">
-              Built from {forge.expertName}'s expertise
+              Built from {workspace.expertName}'s expertise
             </span>
             {editMode ? (
               <div className="flex items-center gap-2">
@@ -285,7 +659,6 @@ export default function ToolViewPage() {
       {/* Regeneration progress overlay */}
       {generationProgress && (
         <div className="bg-slate-900/95 border-b border-slate-700/50 relative overflow-hidden">
-          {/* Background constellation for planning only */}
           {constellationNodes.length > 0 && generationProgress.step === 'planning' && (
             <div className="absolute inset-0 opacity-10 pointer-events-none">
               <KnowledgeConstellation nodes={constellationNodes} />
@@ -367,11 +740,13 @@ export default function ToolViewPage() {
           chats={chats}
           overallProgress={overallProgress}
           activePanel={activePanel}
-          interviewRounds={interviewRounds}
+          interviews={interviews}
+          workspaceId={workspaceId!}
           onPanelChange={setActivePanel}
           onAddDocument={() => setActivePanel({ type: 'documents' })}
           onNewChat={createChat}
           onDeleteChat={deleteChat}
+          onNewInterview={handleNewInterview}
         />
 
         {/* Main panel */}
@@ -444,6 +819,17 @@ export default function ToolViewPage() {
                   </button>
                 ))}
               </div>
+
+              {/* Add component */}
+              <div className="mt-8 border-t border-slate-700/50 pt-6">
+                <ComponentCreator
+                  workspaceId={workspaceId!}
+                  onCreated={() => {
+                    // Refetch tool data to pick up the new component
+                    setActivePanel({ type: 'overview' })
+                  }}
+                />
+              </div>
             </div>
 
             {/* Component panels - display:none/block to preserve state */}
@@ -456,7 +842,6 @@ export default function ToolViewPage() {
 
               return (
                 <div key={`${id}-${idx}`} style={{ display: isActive ? 'block' : 'none' }}>
-                  {/* Tab header */}
                   {title && (
                     <div className="mb-6">
                       <h2 className="text-xl font-bold text-white">{title}</h2>
@@ -466,14 +851,13 @@ export default function ToolViewPage() {
                     </div>
                   )}
 
-                  {/* Component */}
                   <div className="bg-slate-800/50 border border-slate-700/50  p-6">
                     {renderTabComponent({
                       config,
                       id,
                       type,
                       title: title || 'Section',
-                      forgeId: forgeId!,
+                      workspaceId: workspaceId!,
                       userContext,
                       expertAnswers,
                       loadingFlows,
@@ -490,19 +874,19 @@ export default function ToolViewPage() {
 
             {/* Documents panel */}
             {activePanel.type === 'documents' && (
-              <DocumentsPanel forgeId={forgeId!} />
+              <DocumentsPanel workspaceId={workspaceId!} />
             )}
 
             {/* Knowledge panel */}
             {activePanel.type === 'knowledge' && (
-              <KnowledgePanel forgeId={forgeId!} />
+              <KnowledgePanel workspaceId={workspaceId!} extractions={extractions} customExtractionTypes={customExtractionTypes} />
             )}
 
             {/* Chat panel */}
             {activePanel.type === 'chat' && (
               <div className="h-[calc(100vh-8rem)]">
                 <ChatSidebar
-                  forgeId={forgeId!}
+                  workspaceId={workspaceId!}
                   chatId={activePanel.chatId}
                   activeComponentId={null}
                   layout={editableLayout}
@@ -517,16 +901,15 @@ export default function ToolViewPage() {
             {/* Interview summary panel */}
             {activePanel.type === 'interview' && (
               <InterviewSummaryPanel
-                forgeId={forgeId!}
-                forge={forgeData}
-                interviewRounds={interviewRounds}
+                workspaceId={workspaceId!}
+                interviews={interviews}
               />
             )}
           </div>
         </div>
       </div>
 
-      {/* Regenerate confirmation modal */}
+      {/* Share modal */}
       {showShareModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowShareModal(false)}>
           <div className="bg-slate-800 border border-slate-700 p-6 max-w-md w-full mx-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
@@ -548,12 +931,12 @@ export default function ToolViewPage() {
               <input
                 type="text"
                 readOnly
-                value={`${window.location.origin}/tool/${forgeId}`}
+                value={`${window.location.origin}/tool/${workspaceId}`}
                 className="flex-1 px-3 py-2 bg-slate-900 border border-slate-600 text-sm text-white focus:outline-none font-mono"
               />
               <button
                 onClick={() => {
-                  navigator.clipboard.writeText(`${window.location.origin}/tool/${forgeId}`)
+                  navigator.clipboard.writeText(`${window.location.origin}/tool/${workspaceId}`)
                   setShareCopied(true)
                   setTimeout(() => setShareCopied(false), 2000)
                 }}
@@ -628,7 +1011,7 @@ export default function ToolViewPage() {
 
       {/* Floating chat sidebar - hidden when chat panel is active */}
       <ChatSidebar
-        forgeId={forgeId!}
+        workspaceId={workspaceId!}
         activeComponentId={activeTab?.id || null}
         activeComponentTitle={activeTab?.title}
         layout={editableLayout}
@@ -672,7 +1055,7 @@ function GenerationStateView({
               Try Again
             </button>
             <div className="mt-4">
-              <Link to="/forges" className="text-slate-500 hover:text-slate-300 text-sm">
+              <Link to="/workspaces" className="text-slate-500 hover:text-slate-300 text-sm">
                 Back to Home
               </Link>
             </div>
@@ -753,7 +1136,7 @@ function GenerationStateView({
               Start Generation
             </button>
             <div className="mt-4">
-              <Link to="/forges" className="text-slate-500 hover:text-slate-300 text-sm">
+              <Link to="/workspaces" className="text-slate-500 hover:text-slate-300 text-sm">
                 Back to Home
               </Link>
             </div>
@@ -821,7 +1204,7 @@ function PlanReview({
     <div className="h-screen flex flex-col">
       <header className="sticky top-0 z-10 bg-slate-900/90 backdrop-blur-sm border-b border-slate-700/50 shrink-0">
         <div className="px-6 py-3 flex items-center gap-4">
-          <Link to="/forges" className="text-slate-400 hover:text-white transition-colors">
+          <Link to="/workspaces" className="text-slate-400 hover:text-white transition-colors">
             <ArrowLeft className="w-5 h-5" />
           </Link>
           <div className="flex items-center gap-2">
@@ -847,7 +1230,6 @@ function PlanReview({
                 className="bg-slate-800/50 border border-slate-700/50 p-4 group"
               >
                 <div className="flex items-start gap-3">
-                  {/* Reorder controls */}
                   <div className="flex flex-col gap-0.5 pt-0.5 shrink-0">
                     <button
                       onClick={() => handleMoveUp(index)}
@@ -865,7 +1247,6 @@ function PlanReview({
                     </button>
                   </div>
 
-                  {/* Content */}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-1">
                       <span className="text-xs px-2 py-0.5 bg-slate-700 text-slate-300">
@@ -910,7 +1291,6 @@ function PlanReview({
                       </button>
                     )}
 
-                    {/* Outline bullets */}
                     {comp.outline && comp.outline.length > 0 && editingIndex !== index && (
                       <ul className="mt-2 space-y-0.5">
                         {comp.outline.map((item, bulletIdx) => (
@@ -923,7 +1303,6 @@ function PlanReview({
                     )}
                   </div>
 
-                  {/* Remove button */}
                   <button
                     onClick={() => handleRemove(index)}
                     className="p-1.5 text-slate-600 hover:text-red-400 transition-colors shrink-0"
@@ -942,7 +1321,6 @@ function PlanReview({
             </div>
           )}
 
-          {/* Action buttons */}
           <div className="flex items-center gap-3">
             <button
               onClick={handleConfirm}
@@ -965,4 +1343,3 @@ function PlanReview({
     </div>
   )
 }
-

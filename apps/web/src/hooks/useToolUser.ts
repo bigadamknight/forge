@@ -3,39 +3,41 @@ import { useQuery } from '@tanstack/react-query'
 import { getToolConfig, getExtractions } from '../lib/api'
 import type { ActivePanel, ChatInfo } from './useToolDashboard'
 
-function loadCompletionMap(forgeId: string): Record<string, boolean> {
+function loadCompletionMap(workspaceId: string): Record<string, boolean> {
   try {
-    const raw = localStorage.getItem(`completion-${forgeId}`)
+    const raw = localStorage.getItem(`completion-${workspaceId}`)
     return raw ? JSON.parse(raw) : {}
   } catch { return {} }
 }
 
-function loadChats(forgeId: string): ChatInfo[] {
+function loadChats(workspaceId: string): ChatInfo[] {
   try {
-    const raw = localStorage.getItem(`user-chats-${forgeId}`)
+    const raw = localStorage.getItem(`user-chats-${workspaceId}`)
     return raw ? JSON.parse(raw) : [{ id: 'default', title: 'Expert Chat', createdAt: Date.now() }]
   } catch { return [{ id: 'default', title: 'Expert Chat', createdAt: Date.now() }] }
 }
 
-function saveChats(forgeId: string, chats: ChatInfo[]) {
-  try { localStorage.setItem(`user-chats-${forgeId}`, JSON.stringify(chats)) } catch {}
+function saveChats(workspaceId: string, chats: ChatInfo[]) {
+  try { localStorage.setItem(`user-chats-${workspaceId}`, JSON.stringify(chats)) } catch {}
 }
 
-export function useToolUser(forgeId: string) {
+export function useToolUser(workspaceId: string) {
   const [activePanel, setActivePanel] = useState<ActivePanel>({ type: 'overview' })
-  const [completionMap, setCompletionMap] = useState<Record<string, boolean>>(() => loadCompletionMap(forgeId))
-  const [chats, setChats] = useState<ChatInfo[]>(() => loadChats(forgeId))
+  const [completionMap, setCompletionMap] = useState<Record<string, boolean>>(() => loadCompletionMap(workspaceId))
+  const [chats, setChats] = useState<ChatInfo[]>(() => loadChats(workspaceId))
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['tool', forgeId],
-    queryFn: () => getToolConfig(forgeId),
+    queryKey: ['tool', workspaceId],
+    queryFn: () => getToolConfig(workspaceId),
     retry: false,
   })
 
+  // For the user-facing tool page, extractions aren't critical
+  // but we keep the query for potential future use
   const { data: extractions } = useQuery({
-    queryKey: ['extractions', forgeId],
-    queryFn: () => getExtractions(forgeId),
-    enabled: !!data,
+    queryKey: ['extractions-user', workspaceId],
+    queryFn: async () => [] as any[],
+    enabled: false,
   })
 
   const layout = data?.toolConfig?.layout ?? []
@@ -58,28 +60,28 @@ export function useToolUser(forgeId: string) {
   // Persist completionMap
   useEffect(() => {
     try {
-      localStorage.setItem(`completion-${forgeId}`, JSON.stringify(completionMap))
+      localStorage.setItem(`completion-${workspaceId}`, JSON.stringify(completionMap))
     } catch {}
-  }, [completionMap, forgeId])
+  }, [completionMap, workspaceId])
 
   const createChat = useCallback(() => {
     const id = `chat-${Date.now()}`
     const num = chats.length + 1
     const next = [...chats, { id, title: `Chat ${num}`, createdAt: Date.now() }]
     setChats(next)
-    saveChats(forgeId, next)
+    saveChats(workspaceId, next)
     setActivePanel({ type: 'chat', chatId: id })
-  }, [chats, forgeId])
+  }, [chats, workspaceId])
 
   const deleteChat = useCallback((chatId: string) => {
     const next = chats.filter((c) => c.id !== chatId)
     setChats(next)
-    saveChats(forgeId, next)
-    localStorage.removeItem(`chat-${forgeId}-${chatId}`)
+    saveChats(workspaceId, next)
+    localStorage.removeItem(`chat-${workspaceId}-${chatId}`)
     if (activePanel.type === 'chat' && activePanel.chatId === chatId) {
       setActivePanel({ type: 'overview' })
     }
-  }, [chats, forgeId, activePanel])
+  }, [chats, workspaceId, activePanel])
 
   const handleTabChange = useCallback((idx: number) => {
     if (idx === -1) setActivePanel({ type: 'overview' })

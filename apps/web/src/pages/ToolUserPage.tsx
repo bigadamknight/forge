@@ -1,27 +1,29 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useParams } from 'react-router-dom'
 import { Flame, Loader2, ChevronRight, Circle, CheckCircle } from 'lucide-react'
 import { streamAdvice, type AdviceSection } from '../lib/api'
 import { useToolUser } from '../hooks/useToolUser'
 import { renderTabComponent } from '../lib/renderComponent'
+import { useRegisterInteraction } from '../lib/InteractionContext'
+import { TOOL_USER_PAGE } from '../lib/pageInteractions'
 import ChatSidebar from '../components/toolkit/ChatSidebar'
 import WorkspaceSidebar from '../components/workspace/WorkspaceSidebar'
 
-function loadSavedAdvice(forgeId: string): Record<string, AdviceSection[]> {
+function loadSavedAdvice(workspaceId: string): Record<string, AdviceSection[]> {
   try {
-    const raw = localStorage.getItem(`advice-${forgeId}`)
+    const raw = localStorage.getItem(`advice-${workspaceId}`)
     return raw ? JSON.parse(raw) : {}
   } catch { return {} }
 }
 
-function saveAdvice(forgeId: string, answers: Record<string, AdviceSection[]>) {
-  localStorage.setItem(`advice-${forgeId}`, JSON.stringify(answers))
+function saveAdvice(workspaceId: string, answers: Record<string, AdviceSection[]>) {
+  localStorage.setItem(`advice-${workspaceId}`, JSON.stringify(answers))
 }
 
 export default function ToolUserPage() {
-  const { forgeId } = useParams<{ forgeId: string }>()
+  const { workspaceId } = useParams<{ workspaceId: string }>()
   const [userContext, setUserContext] = useState<Record<string, unknown>>({})
-  const [expertAnswers, setExpertAnswers] = useState<Record<string, AdviceSection[]>>(() => loadSavedAdvice(forgeId!))
+  const [expertAnswers, setExpertAnswers] = useState<Record<string, AdviceSection[]>>(() => loadSavedAdvice(workspaceId!))
   const [loadingFlows, setLoadingFlows] = useState<Record<string, boolean>>({})
 
   const {
@@ -40,7 +42,23 @@ export default function ToolUserPage() {
     deleteChat,
     handleCompletionChange,
     handleTabChange,
-  } = useToolUser(forgeId!)
+  } = useToolUser(workspaceId!)
+
+  const { updateState: updatePageState } = useRegisterInteraction(
+    `page:tool-user:${workspaceId}`,
+    TOOL_USER_PAGE,
+    { activePanel: activePanel.type },
+  )
+
+  useEffect(() => {
+    const activeTab = activePanel.type === 'component' ? tabs[activePanel.index] : null
+    updatePageState({
+      activePanel: activePanel.type,
+      activeComponentTitle: activeTab?.title,
+      toolTitle: data ? (data as any).toolConfig?.title : undefined,
+      overallProgress,
+    })
+  }, [activePanel.type, overallProgress, data])
 
   const handleQuestionFlowComplete = async (
     componentId: string,
@@ -51,7 +69,7 @@ export default function ToolUserPage() {
     setExpertAnswers((prev) => ({ ...prev, [componentId]: [] }))
 
     streamAdvice(
-      forgeId!,
+      workspaceId!,
       flowData.question,
       { ...userContext, flowAnswers: flowData.answers },
       componentTitle,
@@ -73,7 +91,7 @@ export default function ToolUserPage() {
       },
       () => {
         setExpertAnswers((prev) => {
-          saveAdvice(forgeId!, prev)
+          saveAdvice(workspaceId!, prev)
           return prev
         })
         setLoadingFlows((prev) => ({ ...prev, [componentId]: false }))
@@ -119,7 +137,7 @@ export default function ToolUserPage() {
     )
   }
 
-  const { forge, toolConfig } = data
+  const { workspace, toolConfig } = data
   const activeTab = activePanel.type === 'component' ? tabs[activePanel.index] : null
 
   return (
@@ -132,7 +150,7 @@ export default function ToolUserPage() {
             <span className="font-medium">{toolConfig.title}</span>
           </div>
           <span className="text-slate-500 text-sm hidden sm:inline">
-            Built from {forge.expertName}'s expertise
+            Built from {workspace.expertName}'s expertise
           </span>
           <div className="ml-auto flex items-center gap-3">
             <div className="flex items-center gap-2 text-sm text-slate-400">
@@ -244,7 +262,7 @@ export default function ToolUserPage() {
                       id,
                       type,
                       title: title || 'Section',
-                      forgeId: forgeId!,
+                      workspaceId: workspaceId!,
                       userContext,
                       expertAnswers,
                       loadingFlows,
@@ -263,7 +281,7 @@ export default function ToolUserPage() {
             {activePanel.type === 'chat' && (
               <div className="h-[calc(100vh-8rem)]">
                 <ChatSidebar
-                  forgeId={forgeId!}
+                  workspaceId={workspaceId!}
                   chatId={activePanel.chatId}
                   activeComponentId={null}
                   layout={layout}
@@ -279,7 +297,7 @@ export default function ToolUserPage() {
 
       {/* Floating expert chat - hidden when chat panel is active */}
       <ChatSidebar
-        forgeId={forgeId!}
+        workspaceId={workspaceId!}
         activeComponentId={activeTab?.id || null}
         activeComponentTitle={activeTab?.title}
         layout={layout}

@@ -1,8 +1,9 @@
-import { LayoutDashboard, FileText, MessageCircle, Mic, Plus, Database } from 'lucide-react'
+import { LayoutDashboard, FileText, MessageCircle, Mic, Plus, Database, User, CheckCircle2, Circle } from 'lucide-react'
 import { getComponentIcon } from '../../lib/componentIcons'
 import SidebarSection from './SidebarSection'
 import SidebarItem from './SidebarItem'
 import type { ActivePanel, ChatInfo } from '../../hooks/useToolDashboard'
+import type { Forge } from '../../lib/api'
 
 interface Tab {
   id: string
@@ -17,12 +18,6 @@ interface Doc {
   type: string
 }
 
-interface InterviewRound {
-  round: number
-  topic: string
-  status: string
-}
-
 interface WorkspaceSidebarProps {
   tabs: Tab[]
   documents: Doc[]
@@ -30,12 +25,16 @@ interface WorkspaceSidebarProps {
   chats: ChatInfo[]
   overallProgress: number
   activePanel: ActivePanel
-  interviewRounds?: InterviewRound[]
+  interviews?: Forge[]
+  workspaceId?: string
   creatorMode?: boolean
+  profileStatus?: 'not_started' | 'in_progress' | 'complete'
+  showProfile?: boolean
   onPanelChange: (panel: ActivePanel) => void
   onAddDocument?: () => void
   onNewChat?: () => void
   onDeleteChat?: (chatId: string) => void
+  onNewInterview?: () => void
 }
 
 export default function WorkspaceSidebar({
@@ -45,14 +44,17 @@ export default function WorkspaceSidebar({
   chats,
   overallProgress,
   activePanel,
-  interviewRounds,
+  interviews,
+  workspaceId,
   creatorMode = true,
+  profileStatus,
+  showProfile = false,
   onPanelChange,
   onAddDocument,
   onNewChat,
   onDeleteChat,
+  onNewInterview,
 }: WorkspaceSidebarProps) {
-  const rounds = interviewRounds ?? [{ round: 1, topic: 'Initial interview', status: 'completed' }]
   return (
     <div className="w-64 shrink-0 border-r border-slate-700/50 bg-slate-900/50 flex flex-col overflow-y-auto">
       <div className="px-3 pt-4 pb-2">
@@ -67,6 +69,19 @@ export default function WorkspaceSidebar({
           />
         </div>
       </div>
+
+      {/* Profile section */}
+      {showProfile && (
+        <SidebarSection title="Profile" count={profileStatus === 'complete' ? 1 : 0}>
+          <SidebarItem
+            icon={User}
+            label="Expert Profile"
+            active={activePanel.type === 'profile'}
+            onClick={() => onPanelChange({ type: 'profile' })}
+            complete={profileStatus === 'complete'}
+          />
+        </SidebarSection>
+      )}
 
       {/* Tools section */}
       <SidebarSection title="Tools" count={tabs.length}>
@@ -114,7 +129,7 @@ export default function WorkspaceSidebar({
         {creatorMode && (
           <SidebarItem
             icon={Database}
-            label="Extractions"
+            label="Distilled Knowledge"
             active={activePanel.type === 'knowledge'}
             onClick={() => onPanelChange({ type: 'knowledge' })}
           />
@@ -138,15 +153,24 @@ export default function WorkspaceSidebar({
             New Chat
           </button>
         )}
-        {interviewRounds && rounds.map((r) => (
+        {interviews && interviews.map((interview) => (
           <SidebarItem
-            key={`interview-${r.round}`}
+            key={`interview-${interview.id}`}
             icon={Mic}
-            label={r.round === 1 ? 'Interview #1' : `Follow-up: ${r.topic.slice(0, 25)}${r.topic.length > 25 ? '...' : ''}`}
-            active={activePanel.type === 'interview' && activePanel.round === r.round}
-            onClick={() => onPanelChange({ type: 'interview', round: r.round })}
+            label={interview.title.slice(0, 30) + (interview.title.length > 30 ? '...' : '')}
+            active={activePanel.type === 'interview' && activePanel.forgeId === interview.id}
+            onClick={() => onPanelChange({ type: 'interview', forgeId: interview.id })}
           />
         ))}
+        {onNewInterview && (
+          <button
+            onClick={onNewInterview}
+            className="w-full flex items-center gap-2.5 px-3 py-1.5 text-xs text-slate-500 hover:text-orange-400 transition-colors border-l-2 border-transparent pl-[10px]"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            New Interview
+          </button>
+        )}
       </SidebarSection>
     </div>
   )

@@ -101,6 +101,54 @@ decision_tree, checklist, step_by_step, calculator, info_card, question_flow, sc
 - **Expert Context**: 5-layer cascading system (domain, expert knowledge, tool, user situation, question)
 - **LLM helpers**: `apps/api/src/lib/llm.ts` provides `generateJSON`, `streamText`, `generateText` with system prompt caching and truncated JSON repair
 
+## Interaction Registry (Voice/Chat Agent Integration)
+
+The AI voice/chat agent discovers interactive capabilities dynamically via a registry system. **When adding new components, pages, or forms, always register their interactions.**
+
+### Component Interactions (static registry)
+
+`packages/shared/src/componentInteractions.ts` — shared between client and API server.
+
+Each component type registers a `ComponentDescriptor` with:
+- `summarize(config)` — contextual update string for voice mode
+- `promptSummary(config)` — prompt-ready summary for session setup
+- `actions[]` — available AI actions with parameter descriptions
+
+To add a new component type:
+1. Add a descriptor entry in `COMPONENT_INTERACTIONS` (shared package)
+2. Add a handler + response in `apps/web/src/lib/componentInteractions.ts` (client-side `ACTION_HANDLERS` and `ACTION_RESPONSES`)
+3. No changes needed to ChatSidebar or tools.ts — they read from the registry automatically
+
+### Page/Form Interactions (runtime registry)
+
+`apps/web/src/lib/InteractionContext.tsx` — React context provider.
+`apps/web/src/lib/pageInteractions.ts` — page-level descriptors.
+
+Pages register dynamically via `useRegisterInteraction()`:
+```ts
+import { useRegisterInteraction } from '../lib/InteractionContext'
+import { MY_PAGE } from '../lib/pageInteractions'
+
+// In your page component:
+const { updateState } = useRegisterInteraction('page:my-page', MY_PAGE, initialState)
+
+// When state changes:
+useEffect(() => { updateState({ ...newState }) }, [deps])
+```
+
+To add interaction awareness to a new page or form:
+1. Define an `InteractionDescriptor` in `pageInteractions.ts` (scope: 'page' | 'form')
+2. Call `useRegisterInteraction()` in the page component
+3. Call `updateState()` when relevant state changes
+4. ChatSidebar reads from the context automatically via `useInteractionContext()`
+
+### Key files
+- `packages/shared/src/componentInteractions.ts` — component descriptors, prompt builders, tool rules
+- `apps/web/src/lib/componentInteractions.ts` — client-side tool handlers for ElevenLabs voice
+- `apps/web/src/lib/InteractionContext.tsx` — React context provider, `useRegisterInteraction` hook
+- `apps/web/src/lib/pageInteractions.ts` — page/form descriptors
+- `apps/web/src/components/toolkit/ChatSidebar.tsx` — consumes both registries
+
 ## AI Models
 
 - **Opus 4.6**: interview planning, tool planning, expert answers, conductor
@@ -109,7 +157,10 @@ decision_tree, checklist, step_by_step, calculator, info_card, question_flow, sc
 
 ## Database
 
-PostgreSQL 16 via Docker. Schema at `packages/db/src/schema.ts`. 7 tables: `forges`, `interview_sections`, `interview_questions`, `messages`, `extractions`, `documents`, `tool_sessions`. All use UUID primary keys with cascade deletes from forges.
+PostgreSQL 16 via Docker. Schema at `packages/db/src/schema.ts`. Tables: `workspaces`, `forges`, `interview_sections`, `interview_questions`, `messages`, `extractions`, `knowledge_units`, `documents`, `tool_advice`, `tool_sessions`. All use UUID primary keys with cascade deletes.
+
+- `knowledge_units` is the curated, workspace-scoped knowledge layer: extractions are promoted into it (status `proposed`) when an interview round completes (`promoteExtractionsToUnits` in `services/knowledge-base.ts`), with embeddings and workspace-scoped hybrid search (`searchUnitsHybrid` in `lib/embeddings.ts`). `loadExpertKnowledge` reads from it, falling back to raw extractions.
+- `tool_advice` persists `/tool/advice` output (question, userContext, generated sections); `GET /:workspaceId/tool/advice` lists saved advice.
 
 ## AI Services (apps/api/src/services/)
 
@@ -118,3 +169,107 @@ PostgreSQL 16 via Docker. Schema at `packages/db/src/schema.ts`. 7 tables: `forg
 - `validator.ts` - validates answer quality against question goals
 - `extractor.ts` - extracts structured knowledge from answers
 - `tool-generator.ts` - plan + parallel component generation + operations board
+- `interview-progress.ts` - shared advancement/completion engine used by BOTH text (`routes/interviews.ts`) and voice (`routes/voice.ts`) paths — voice keeps its extraction-count gate but advancement mechanics and round completion are unified
+- `knowledge-base.ts` - promotes extractions to `knowledge_units` on round completion (idempotent)
+
+<!-- gitnexus:start -->
+# GitNexus — Code Intelligence
+
+This project is indexed by GitNexus as **forge** (838 symbols, 1817 relationships, 63 execution flows). Use the GitNexus MCP tools to understand code, assess impact, and navigate safely.
+
+> If any GitNexus tool warns the index is stale, run `npx gitnexus analyze` in terminal first.
+
+## Always Do
+
+- **MUST run impact analysis before editing any symbol.** Before modifying a function, class, or method, run `gitnexus_impact({target: "symbolName", direction: "upstream"})` and report the blast radius (direct callers, affected processes, risk level) to the user.
+- **MUST run `gitnexus_detect_changes()` before committing** to verify your changes only affect expected symbols and execution flows.
+- **MUST warn the user** if impact analysis returns HIGH or CRITICAL risk before proceeding with edits.
+- When exploring unfamiliar code, use `gitnexus_query({query: "concept"})` to find execution flows instead of grepping. It returns process-grouped results ranked by relevance.
+- When you need full context on a specific symbol — callers, callees, which execution flows it participates in — use `gitnexus_context({name: "symbolName"})`.
+
+## When Debugging
+
+1. `gitnexus_query({query: "<error or symptom>"})` — find execution flows related to the issue
+2. `gitnexus_context({name: "<suspect function>"})` — see all callers, callees, and process participation
+3. `READ gitnexus://repo/forge/process/{processName}` — trace the full execution flow step by step
+4. For regressions: `gitnexus_detect_changes({scope: "compare", base_ref: "main"})` — see what your branch changed
+
+## When Refactoring
+
+- **Renaming**: MUST use `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` first. Review the preview — graph edits are safe, text_search edits need manual review. Then run with `dry_run: false`.
+- **Extracting/Splitting**: MUST run `gitnexus_context({name: "target"})` to see all incoming/outgoing refs, then `gitnexus_impact({target: "target", direction: "upstream"})` to find all external callers before moving code.
+- After any refactor: run `gitnexus_detect_changes({scope: "all"})` to verify only expected files changed.
+
+## Never Do
+
+- NEVER edit a function, class, or method without first running `gitnexus_impact` on it.
+- NEVER ignore HIGH or CRITICAL risk warnings from impact analysis.
+- NEVER rename symbols with find-and-replace — use `gitnexus_rename` which understands the call graph.
+- NEVER commit changes without running `gitnexus_detect_changes()` to check affected scope.
+
+## Tools Quick Reference
+
+| Tool | When to use | Command |
+|------|-------------|---------|
+| `query` | Find code by concept | `gitnexus_query({query: "auth validation"})` |
+| `context` | 360-degree view of one symbol | `gitnexus_context({name: "validateUser"})` |
+| `impact` | Blast radius before editing | `gitnexus_impact({target: "X", direction: "upstream"})` |
+| `detect_changes` | Pre-commit scope check | `gitnexus_detect_changes({scope: "staged"})` |
+| `rename` | Safe multi-file rename | `gitnexus_rename({symbol_name: "old", new_name: "new", dry_run: true})` |
+| `cypher` | Custom graph queries | `gitnexus_cypher({query: "MATCH ..."})` |
+
+## Impact Risk Levels
+
+| Depth | Meaning | Action |
+|-------|---------|--------|
+| d=1 | WILL BREAK — direct callers/importers | MUST update these |
+| d=2 | LIKELY AFFECTED — indirect deps | Should test |
+| d=3 | MAY NEED TESTING — transitive | Test if critical path |
+
+## Resources
+
+| Resource | Use for |
+|----------|---------|
+| `gitnexus://repo/forge/context` | Codebase overview, check index freshness |
+| `gitnexus://repo/forge/clusters` | All functional areas |
+| `gitnexus://repo/forge/processes` | All execution flows |
+| `gitnexus://repo/forge/process/{name}` | Step-by-step execution trace |
+
+## Self-Check Before Finishing
+
+Before completing any code modification task, verify:
+1. `gitnexus_impact` was run for all modified symbols
+2. No HIGH/CRITICAL risk warnings were ignored
+3. `gitnexus_detect_changes()` confirms changes match expected scope
+4. All d=1 (WILL BREAK) dependents were updated
+
+## Keeping the Index Fresh
+
+After committing code changes, the GitNexus index becomes stale. Re-run analyze to update it:
+
+```bash
+npx gitnexus analyze
+```
+
+If the index previously included embeddings, preserve them by adding `--embeddings`:
+
+```bash
+npx gitnexus analyze --embeddings
+```
+
+To check whether embeddings exist, inspect `.gitnexus/meta.json` — the `stats.embeddings` field shows the count (0 means no embeddings). **Running analyze without `--embeddings` will delete any previously generated embeddings.**
+
+> Claude Code users: A PostToolUse hook handles this automatically after `git commit` and `git merge`.
+
+## CLI
+
+| Task | Read this skill file |
+|------|---------------------|
+| Understand architecture / "How does X work?" | `.claude/skills/gitnexus/gitnexus-exploring/SKILL.md` |
+| Blast radius / "What breaks if I change X?" | `.claude/skills/gitnexus/gitnexus-impact-analysis/SKILL.md` |
+| Trace bugs / "Why is X failing?" | `.claude/skills/gitnexus/gitnexus-debugging/SKILL.md` |
+| Rename / extract / split / refactor | `.claude/skills/gitnexus/gitnexus-refactoring/SKILL.md` |
+| Tools, resources, schema reference | `.claude/skills/gitnexus/gitnexus-guide/SKILL.md` |
+| Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus/gitnexus-cli/SKILL.md` |
+
+<!-- gitnexus:end -->

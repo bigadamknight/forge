@@ -1,14 +1,17 @@
 import { useState } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Loader2, Pencil, Check, X, Database } from 'lucide-react'
-import { getExtractions, updateExtraction, deleteExtraction } from '../../lib/api'
-import { EXTRACTION_TYPES, EXTRACTION_TYPE_KEYS } from '../../lib/extractionTypes'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { Loader2, Pencil, Check, X, Database, Settings } from 'lucide-react'
+import { updateExtraction, deleteExtraction, type Extraction } from '../../lib/api'
+import { getMergedExtractionTypes, getMergedExtractionTypeKeys, type CustomExtractionType } from '../../lib/extractionTypes'
+import ExtractionTypesManager from './ExtractionTypesManager'
 
 interface KnowledgePanelProps {
-  forgeId: string
+  workspaceId: string
+  extractions?: Extraction[]
+  customExtractionTypes?: CustomExtractionType[]
 }
 
-export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
+export default function KnowledgePanel({ workspaceId, extractions: propExtractions, customExtractionTypes }: KnowledgePanelProps) {
   const queryClient = useQueryClient()
   const [typeFilter, setTypeFilter] = useState<string | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -16,17 +19,17 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
   const [editType, setEditType] = useState('')
   const [deletingId, setDeletingId] = useState<string | null>(null)
   const [savedId, setSavedId] = useState<string | null>(null)
+  const [showTypesManager, setShowTypesManager] = useState(false)
 
-  const { data: items = [], isLoading } = useQuery({
-    queryKey: ['extractions', forgeId],
-    queryFn: () => getExtractions(forgeId),
-  })
+  const items = propExtractions ?? []
+  const mergedTypes = getMergedExtractionTypes(customExtractionTypes)
+  const mergedTypeKeys = getMergedExtractionTypeKeys(customExtractionTypes)
 
   const updateMutation = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { content?: string; type?: string } }) =>
+    mutationFn: ({ forgeId, id, data }: { forgeId: string; id: string; data: { content?: string; type?: string } }) =>
       updateExtraction(forgeId, id, data),
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['extractions', forgeId] })
+      queryClient.invalidateQueries({ queryKey: ['extractions'] })
       setSavedId(variables.id)
       setEditingId(null)
       setTimeout(() => setSavedId(null), 2000)
@@ -34,9 +37,9 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
   })
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deleteExtraction(forgeId, id),
+    mutationFn: ({ forgeId, id }: { forgeId: string; id: string }) => deleteExtraction(forgeId, id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['extractions', forgeId] })
+      queryClient.invalidateQueries({ queryKey: ['extractions'] })
       setDeletingId(null)
     },
   })
@@ -57,13 +60,15 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
     if (editContent !== orig.content) data.content = editContent
     if (editType !== orig.type) data.type = editType
     if (Object.keys(data).length === 0) { setEditingId(null); return }
-    updateMutation.mutate({ id: editingId, data })
+    updateMutation.mutate({ forgeId: orig.forgeId, id: editingId, data })
   }
 
   const typeCounts: Record<string, number> = {}
   for (const item of items) {
     typeCounts[item.type] = (typeCounts[item.type] || 0) + 1
   }
+
+  const getTypeMeta = (key: string) => mergedTypes[key] || { label: key, color: 'bg-slate-700 text-slate-300' }
 
   return (
     <div>
@@ -72,9 +77,16 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
           <Database className="w-5 h-5 text-slate-400" />
           <h2 className="text-xl font-bold text-white">Knowledge</h2>
           <span className="text-sm text-slate-500">({items.length})</span>
+          <button
+            onClick={() => setShowTypesManager(true)}
+            className="ml-auto text-slate-500 hover:text-orange-400 transition-colors"
+            title="Manage extraction types"
+          >
+            <Settings className="w-4 h-4" />
+          </button>
         </div>
         <p className="text-slate-400 text-sm">
-          Extracted knowledge from interviews. Edit or remove items to refine your tool's expertise.
+          Distilled knowledge from interviews. Edit or remove items to refine your tool's expertise.
         </p>
       </div>
 
@@ -90,8 +102,8 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
           >
             All ({items.length})
           </button>
-          {EXTRACTION_TYPE_KEYS.filter((t) => typeCounts[t]).map((t) => {
-            const meta = EXTRACTION_TYPES[t]
+          {mergedTypeKeys.filter((t) => typeCounts[t]).map((t) => {
+            const meta = getTypeMeta(t)
             return (
               <button
                 key={t}
@@ -109,13 +121,6 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
         </div>
       )}
 
-      {isLoading && (
-        <div className="flex items-center gap-2 text-slate-500 text-sm py-4">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          Loading extractions...
-        </div>
-      )}
-
       {filtered.length > 0 && (
         <div className="space-y-2">
           {filtered.map((item) => (
@@ -129,8 +134,8 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
                       onChange={(e) => setEditType(e.target.value)}
                       className="w-full px-3 py-2 bg-slate-700/50 border border-slate-600/50 text-sm text-white focus:border-orange-500 focus:outline-none transition-colors"
                     >
-                      {EXTRACTION_TYPE_KEYS.map((t) => (
-                        <option key={t} value={t}>{EXTRACTION_TYPES[t].label}</option>
+                      {mergedTypeKeys.map((t) => (
+                        <option key={t} value={t}>{getTypeMeta(t).label}</option>
                       ))}
                     </select>
                   </div>
@@ -174,8 +179,8 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
                   <div className="flex items-start gap-3 px-4 py-3 group">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1.5">
-                        <span className={`text-[10px] font-medium px-2 py-0.5 ${EXTRACTION_TYPES[item.type]?.color || 'bg-slate-700 text-slate-300'}`}>
-                          {EXTRACTION_TYPES[item.type]?.label || item.type}
+                        <span className={`text-[10px] font-medium px-2 py-0.5 ${getTypeMeta(item.type).color}`}>
+                          {getTypeMeta(item.type).label}
                         </span>
                         {item.confidence != null && (
                           <span className="text-[10px] text-slate-600">
@@ -206,7 +211,7 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
                     {deletingId === item.id ? (
                       <div className="flex items-center gap-1 shrink-0">
                         <button
-                          onClick={() => deleteMutation.mutate(item.id)}
+                          onClick={() => deleteMutation.mutate({ forgeId: item.forgeId, id: item.id })}
                           disabled={deleteMutation.isPending}
                           className="text-xs px-2 py-0.5 text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 transition-colors"
                         >
@@ -235,12 +240,20 @@ export default function KnowledgePanel({ forgeId }: KnowledgePanelProps) {
         </div>
       )}
 
-      {!isLoading && items.length === 0 && (
+      {items.length === 0 && (
         <div className="text-center py-12">
           <Database className="w-10 h-10 mx-auto mb-3 text-slate-700" />
-          <p className="text-slate-500 text-sm">No knowledge extracted yet.</p>
+          <p className="text-slate-500 text-sm">No knowledge distilled yet.</p>
           <p className="text-slate-600 text-xs mt-1">Complete an interview to build your knowledge base.</p>
         </div>
+      )}
+
+      {showTypesManager && (
+        <ExtractionTypesManager
+          workspaceId={workspaceId}
+          customTypes={customExtractionTypes ?? []}
+          onClose={() => setShowTypesManager(false)}
+        />
       )}
     </div>
   )

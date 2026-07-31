@@ -26,7 +26,7 @@ export default function LandingPage() {
 
           <div className="flex items-center gap-4">
             <Link
-              to="/forges"
+              to="/workspaces"
               className="inline-flex items-center gap-2 px-6 py-3 bg-orange-600 hover:bg-orange-700 transition-colors font-medium text-lg"
             >
               Try It Out
@@ -81,8 +81,8 @@ export default function LandingPage() {
           <Step
             icon={<Brain className="w-6 h-6" />}
             number="2"
-            title="Knowledge Extraction"
-            description="As you talk, Opus extracts structured knowledge in real-time: facts, processes, decisions, pitfalls. Every insight captured and validated."
+            title="Knowledge Distillation"
+            description="As you talk, Opus distills structured knowledge in real-time: facts, processes, decisions, pitfalls. Every insight captured and validated."
           />
           <Step
             icon={<Sparkles className="w-6 h-6" />}
@@ -101,21 +101,21 @@ export default function LandingPage() {
           the entire pipeline from interview to interactive tool.
         </p>
         <div className="grid grid-cols-2 gap-4">
-          <OpusRole title="Interview Planner" description="Designs structured interview sections with extraction priorities based on domain analysis" />
+          <OpusRole title="Interview Planner" description="Designs structured interview sections with knowledge distillation priorities based on domain analysis" />
           <OpusRole title="Conductor" description="Manages conversation flow in real-time, deciding when to probe deeper vs advance to new topics" />
-          <OpusRole title="Knowledge Extractor" description="Pulls structured facts, processes, and decisions from natural conversation as it happens" />
-          <OpusRole title="Tool Architect" description="Selects the right component types and designs the tool layout from extracted knowledge" />
+          <OpusRole title="Knowledge Distiller" description="Pulls structured facts, processes, and decisions from natural conversation as it happens" />
+          <OpusRole title="Tool Architect" description="Selects the right component types and designs the tool layout from distilled knowledge" />
           <OpusRole title="Expert Channel" description="Answers user questions by channelling the expert's knowledge through 5-layer cascading context" />
           <OpusRole title="Tool Refiner" description="Understands conversational edit requests and updates component configs in real-time" />
           <OpusRole title="Knowledge Integrator" description="Analyzes follow-up interviews and proposes updates to existing tools with new knowledge" />
         </div>
       </section>
 
-      {/* Extraction Types */}
+      {/* Knowledge Types */}
       <section className="max-w-4xl mx-auto px-8 py-16">
         <h2 className="text-2xl font-bold mb-3 text-center">9 Knowledge Types</h2>
         <p className="text-slate-400 text-center mb-12 max-w-2xl mx-auto">
-          As the expert speaks, the Knowledge Extractor classifies every insight into one of nine types,
+          As the expert speaks, the Knowledge Distiller classifies every insight into one of nine types,
           each with a confidence score and tags. This structured taxonomy drives tool generation.
         </p>
         <div className="grid grid-cols-3 gap-3">
@@ -173,15 +173,15 @@ export default function LandingPage() {
         <div className="grid grid-cols-2 gap-6">
           <Feature
             title="Voice Interviews"
-            description="ElevenLabs-powered conversational AI that conducts natural voice interviews with real-time knowledge extraction."
+            description="ElevenLabs-powered conversational AI that conducts natural voice interviews with real-time knowledge distillation."
           />
           <Feature
-            title="Live Knowledge Extraction"
-            description="As the expert speaks, facts, processes, and decisions are extracted and validated in real-time using parallel Opus pipelines."
+            title="Live Knowledge Distillation"
+            description="As the expert speaks, facts, processes, and decisions are distilled and validated in real-time using parallel Opus pipelines."
           />
           <Feature
             title="Follow-Up Interviews"
-            description="Return to deepen knowledge in specific areas. New extractions integrate into existing tools through Opus-powered proposals."
+            description="Return to deepen knowledge in specific areas. New knowledge integrates into existing tools through Opus-powered proposals."
           />
           <Feature
             title="Shareable Tools"

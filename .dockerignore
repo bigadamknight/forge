@@ -1,0 +1,11 @@
+node_modules
+.git
+*.md
+e2e
+test-results
+thoughts
+introProfile
+mcp_stderr.log
+.env
+.env.*
+!.env.example
