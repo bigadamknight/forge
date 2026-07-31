@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "lastUpdated": "2026-06-11",
+  "lastUpdated": "2026-07-31",
   "project": {
     "name": "Forge",
     "description": "AI-powered platform that captures expert knowledge through interviews and generates interactive tools",
@@ -20,11 +20,12 @@
     { "name": "Azure OpenAI Embeddings" },
     { "name": "React Query" },
     { "name": "MCP SDK" },
-    { "name": "Playwright" }
+    { "name": "Playwright" },
+    { "name": "Docker (production compose + nginx)" }
   ],
   "stats": [
     { "label": "API Endpoints", "value": 55 },
-    { "label": "DB Tables", "value": 8 },
+    { "label": "DB Tables", "value": 10 },
     { "label": "Pages", "value": 7 },
     { "label": "Hooks", "value": 8 },
     { "label": "AI Services", "value": 7 },
@@ -111,6 +112,7 @@
         { "name": "conductor.ts", "type": "service" },
         { "name": "validator.ts", "type": "service" },
         { "name": "extractor.ts", "type": "service" },
+        { "name": "interview-progress.ts", "type": "service" },
         { "name": "interviews.ts", "type": "route" },
         { "name": "InterviewPage.tsx", "type": "frontend" },
         { "name": "useInterview.ts", "type": "hook" },
@@ -122,6 +124,7 @@
         { "name": "Goal-based question validation", "status": "done" },
         { "name": "Real-time knowledge extraction (9 types)", "status": "done" },
         { "name": "Auto-advance at confidence threshold", "status": "done" },
+        { "name": "Shared advancement/completion engine for text + voice (interview-progress.ts)", "status": "done" },
         { "name": "Section summaries", "status": "done" }
       ],
       "connections": ["database", "claude-api", "interview-planner"]
@@ -141,7 +144,8 @@
         { "name": "Voice sessions with interview context", "status": "done" },
         { "name": "Voice intro sessions (profile capture)", "status": "done" },
         { "name": "Transcript saving and extraction", "status": "done" },
-        { "name": "Resume from partial interview", "status": "done" }
+        { "name": "Resume from partial interview", "status": "done" },
+        { "name": "Round completion via shared advancement engine", "status": "done" }
       ],
       "connections": ["database", "elevenlabs-api", "interview-conductor", "intro-phase"]
     },
@@ -159,7 +163,8 @@
       "features": [
         { "name": "Follow-up interview creation (skips intro)", "status": "done" },
         { "name": "Integrate-knowledge proposal generation", "status": "done" },
-        { "name": "Per-proposal review/approve UI with previews", "status": "done" }
+        { "name": "Per-proposal review/approve UI with previews", "status": "done" },
+        { "name": "Structural validation of applied configs (component-validation.ts), applied/rejected reporting", "status": "done" }
       ],
       "connections": ["interview-conductor", "tool-generator", "database", "claude-api"]
     },
@@ -281,20 +286,37 @@
     {
       "id": "knowledge-search",
       "name": "Embeddings & Hybrid Search",
-      "description": "Azure OpenAI embeddings with hybrid semantic + keyword search over extractions",
+      "description": "Azure OpenAI embeddings with hybrid semantic + keyword search over extractions and knowledge units",
       "categoryId": "knowledge",
       "status": "complete",
       "layers": [
-        { "name": "embeddings.ts", "type": "service" },
-        { "name": "search.ts", "type": "service" },
-        { "name": "backfill-embeddings.ts", "type": "job" }
+        { "name": "embeddings.ts", "type": "service" }
       ],
       "features": [
-        { "name": "Embedding generation with content hashing", "status": "done" },
-        { "name": "Hybrid search with graceful fallback to full scan", "status": "done" },
-        { "name": "Backfill script for existing extractions", "status": "done" }
+        { "name": "Embedding generation with content hashing + cache", "status": "done" },
+        { "name": "Per-forge hybrid search over extractions (RRF fusion)", "status": "done" },
+        { "name": "Workspace-scoped hybrid search over knowledge_units", "status": "done" },
+        { "name": "Graceful fallback to full scan when no embeddings", "status": "done" }
       ],
-      "connections": ["database", "azure-openai"]
+      "connections": ["database", "azure-openai", "knowledge-units"]
+    },
+    {
+      "id": "knowledge-units",
+      "name": "Curated Knowledge Layer",
+      "description": "Workspace-scoped knowledge_units promoted from extractions on round completion, with curation status and provenance",
+      "categoryId": "knowledge",
+      "status": "complete",
+      "layers": [
+        { "name": "knowledge-base.ts", "type": "service" },
+        { "name": "0008_knowledge_units.sql", "type": "migration" }
+      ],
+      "features": [
+        { "name": "Idempotent promotion job on interview round completion", "status": "done" },
+        { "name": "Curation states (proposed/approved/superseded/rejected)", "status": "done" },
+        { "name": "Provenance chain: unit → extraction → question → section → forge", "status": "done" },
+        { "name": "Embeddings + hnsw/trgm indexes, backfill from extractions", "status": "done" }
+      ],
+      "connections": ["database", "knowledge-search", "interview-conductor"]
     },
     {
       "id": "mcp-server",
@@ -316,7 +338,7 @@
     {
       "id": "database",
       "name": "Database Layer",
-      "description": "8 Drizzle tables: workspaces, forges, sections, questions, messages, extractions, documents, tool sessions",
+      "description": "10 Drizzle tables: workspaces, forges, sections, questions, messages, extractions, knowledge_units, documents, tool_advice, tool_sessions",
       "categoryId": "data",
       "status": "complete",
       "layers": [
@@ -328,6 +350,7 @@
         { "name": "Workspace-scoped tool config + knowledge base (jsonb)", "status": "done" },
         { "name": "Interview state (sections, questions, messages)", "status": "done" },
         { "name": "9-type extractions with embeddings", "status": "done" },
+        { "name": "knowledge_units curated layer + tool_advice persistence", "status": "done" },
         { "name": "Demo and interview seed fixtures", "status": "done" },
         { "name": "Required DATABASE_URL, parameterized dev password", "status": "done" }
       ],
@@ -342,7 +365,8 @@
         { "label": "Interview Plan (Opus)", "type": "backend", "componentId": "interview-planner" },
         { "label": "SSE Interview (text/voice)", "type": "backend", "componentId": "interview-conductor" },
         { "label": "Real-time Extraction", "type": "backend", "componentId": "interview-conductor" },
-        { "label": "Knowledge Base", "type": "database", "componentId": "database" }
+        { "label": "Promotion to Knowledge Units", "type": "backend", "componentId": "knowledge-units" },
+        { "label": "Curated Knowledge Layer", "type": "database", "componentId": "database" }
       ]
     },
     {
@@ -385,6 +409,15 @@
     }
   ],
   "roadmap": [
+    {
+      "title": "Paced Learning Platform",
+      "priority": "high",
+      "items": [
+        "Phase 1: learner tables, path planner, session flow with MC + Click & Fill exercises (see docs/learning-platform-brief.md)",
+        "Phase 2: Order Steps exercise, spaced repetition, pace recalculation, standing learner preferences",
+        "Phase 3: generated diagrams, PWA + update banner, streaks, expert analytics"
+      ]
+    },
     {
       "title": "Frontend Resilience",
       "priority": "high",
