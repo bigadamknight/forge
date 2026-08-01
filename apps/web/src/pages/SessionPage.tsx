@@ -5,7 +5,9 @@ import { useSession } from '../hooks/useSession'
 import LessonCard from '../components/learn/LessonCard'
 import ExerciseMC from '../components/learn/ExerciseMC'
 import ExerciseClickFill from '../components/learn/ExerciseClickFill'
+import ExerciseOrderSteps from '../components/learn/ExerciseOrderSteps'
 import CheckpointCard from '../components/learn/CheckpointCard'
+import CheckpointReview from '../components/learn/CheckpointReview'
 import { useRegisterInteraction } from '../lib/InteractionContext'
 import { LEARN_SESSION_PAGE } from '../lib/pageInteractions'
 
@@ -20,6 +22,8 @@ export default function SessionPage() {
     sessionDone,
     handleContinue,
     handleAttempt,
+    handleGradedAttempt,
+    handleCheckpointFinish,
     handleNextAfterFeedback,
     handleBackToPath,
   } = useSession(workspaceId!)
@@ -101,7 +105,11 @@ export default function SessionPage() {
         </div>
 
         {currentUnit.kind === 'checkpoint' ? (
-          <CheckpointCard onContinue={handleContinue} />
+          content && content.kind === 'checkpoint_review' ? (
+            <CheckpointReview content={content} onFinish={handleCheckpointFinish} />
+          ) : (
+            <CheckpointCard onContinue={handleContinue} />
+          )
         ) : !content ? (
           <div className="bg-slate-800 border border-slate-700 p-8 text-center">
             <Loader2 className="w-6 h-6 animate-spin text-orange-400 mx-auto mb-3" />
@@ -119,6 +127,8 @@ export default function SessionPage() {
           <ExerciseMC content={content} onAnswer={handleAttempt} onNext={handleNextAfterFeedback} />
         ) : content.kind === 'exercise_fill' ? (
           <ExerciseClickFill content={content} onAnswer={handleAttempt} onNext={handleNextAfterFeedback} />
+        ) : content.kind === 'exercise_order' ? (
+          <ExerciseOrderSteps content={content} onAnswer={handleGradedAttempt} onNext={handleNextAfterFeedback} />
         ) : (
           <CheckpointCard onContinue={handleContinue} />
         )}

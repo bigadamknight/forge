@@ -349,7 +349,28 @@ export interface ExerciseFillContent {
   explanation: string
 }
 
-export type PathUnitContent = LessonCardContent | ExerciseMCContent | ExerciseFillContent
+export interface ExerciseOrderContent {
+  kind: "exercise_order"
+  prompt: string
+  steps: string[]            // correct order; client shuffles for display
+  explanation: string
+}
+
+// Checkpoint resolved at serve time: re-served exercises from the learner's
+// weakest / stalest attempts (spaced repetition)
+export interface CheckpointReviewContent {
+  kind: "checkpoint_review"
+  intro: string
+  exercises: Array<ExerciseMCContent | ExerciseFillContent | ExerciseOrderContent>
+  sourcePathUnitIds: string[]
+}
+
+export type PathUnitContent =
+  | LessonCardContent
+  | ExerciseMCContent
+  | ExerciseFillContent
+  | ExerciseOrderContent
+  | CheckpointReviewContent
 
 // ============ Extraction Types ============
 

@@ -60,18 +60,45 @@ export function useSession(workspaceId: string) {
   }
 
   // Exercises: record the attempt, then the component shows feedback before advancing
-  const handleAttempt = async (answer: unknown, correct: boolean) => {
+  const recordAttempt = async (answer: unknown, correct: 'yes' | 'no' | 'partial') => {
     if (!currentUnit || !stored) return
     try {
       await submitAttempt(currentUnit.id, {
         learnerId: stored.learnerId,
         answer,
-        correct: correct ? 'yes' : 'no',
+        correct,
         latencyMs: Date.now() - unitStartRef.current,
       })
     } catch (err) {
       console.error('Failed to record attempt:', err)
     }
+  }
+
+  const handleAttempt = async (answer: unknown, correct: boolean) => {
+    await recordAttempt(answer, correct ? 'yes' : 'no')
+  }
+
+  // Order exercise grades with partial credit
+  const handleGradedAttempt = async (answer: unknown, correct: 'yes' | 'no' | 'partial') => {
+    await recordAttempt(answer, correct)
+  }
+
+  // Checkpoint review: one attempt for the whole review, then advance
+  const handleCheckpointFinish = async (result: { rightCount: number; total: number; details: unknown }) => {
+    if (!currentUnit || !stored) return
+    const correct =
+      result.rightCount === result.total ? 'yes' : result.rightCount * 2 >= result.total ? 'partial' : 'no'
+    try {
+      await submitAttempt(currentUnit.id, {
+        learnerId: stored.learnerId,
+        answer: result,
+        correct,
+        latencyMs: Date.now() - unitStartRef.current,
+      })
+    } catch (err) {
+      console.error('Failed to record checkpoint attempt:', err)
+    }
+    advance()
   }
 
   const handleNextAfterFeedback = () => {
@@ -91,6 +118,8 @@ export function useSession(workspaceId: string) {
     sessionDone,
     handleContinue,
     handleAttempt,
+    handleGradedAttempt,
+    handleCheckpointFinish,
     handleNextAfterFeedback,
     handleBackToPath,
   }

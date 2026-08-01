@@ -35,7 +35,7 @@ const PATH_SKELETON_SCHEMA = {
             items: {
               type: "object",
               properties: {
-                kind: { type: "string", enum: ["lesson_card", "exercise_mc", "exercise_fill", "checkpoint"] },
+                kind: { type: "string", enum: ["lesson_card", "exercise_mc", "exercise_fill", "exercise_order", "checkpoint"] },
                 focus: { type: "string" },
                 sourceUnitIds: { type: "array", items: { type: "string" } },
               },
@@ -136,11 +136,11 @@ ${corpus}
 
 RULES:
 - Create ${caps.min}-${caps.max} milestones, each with up to ${maxUnitsPerMilestone} units.
-- Unit kinds: "lesson_card" (teaches 1 concept), "exercise_mc" (multiple choice), "exercise_fill" (fill-in-the-blank), "checkpoint" (review marker).
+- Unit kinds: "lesson_card" (teaches 1 concept), "exercise_mc" (multiple choice), "exercise_fill" (fill-in-the-blank), "exercise_order" (order the steps of a procedure), "checkpoint" (review marker).
 - Alternate teaching and practice: a lesson_card followed by an exercise on the same knowledge.
 - Every milestone ends with a "checkpoint" unit.
 - Every unit's sourceUnitIds MUST reference ids from the corpus above. If the corpus doesn't support a milestone, omit the milestone — do NOT fill gaps with general knowledge.
-- exercise_fill works best on fact/definition/metric knowledge; exercise_mc on decision_rule/warning knowledge.
+- exercise_fill works best on fact/definition/metric knowledge; exercise_mc on decision_rule/warning knowledge; exercise_order on procedure knowledge with clear sequential steps.
 - Each unit's "focus" states the specific knowledge it covers (be concrete, not generic).
 - The final milestone must be titled "Master and retain" and consist of exercises revisiting the most important knowledge, ending with a checkpoint.
 

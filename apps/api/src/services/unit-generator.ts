@@ -86,10 +86,23 @@ const EXERCISE_FILL_SCHEMA = {
   additionalProperties: false,
 }
 
+const EXERCISE_ORDER_SCHEMA = {
+  type: "object",
+  properties: {
+    kind: { type: "string", const: "exercise_order" },
+    prompt: { type: "string" },
+    steps: { type: "array", items: { type: "string" } },
+    explanation: { type: "string" },
+  },
+  required: ["kind", "prompt", "steps", "explanation"],
+  additionalProperties: false,
+}
+
 const SCHEMAS: Record<string, Record<string, unknown>> = {
   lesson_card: LESSON_CARD_SCHEMA,
   exercise_mc: EXERCISE_MC_SCHEMA,
   exercise_fill: EXERCISE_FILL_SCHEMA,
+  exercise_order: EXERCISE_ORDER_SCHEMA,
 }
 
 const KIND_INSTRUCTIONS: Record<string, string> = {
@@ -102,6 +115,9 @@ Every option's "explanation" says why it's right or wrong, using the expert's ac
   exercise_fill: `Write ONE fill-in-the-blank exercise from the source knowledge.
 The "sentence" uses {{0}}, {{1}} placeholders (2-3 blanks) replacing load-bearing terms. "blanks" holds the correct term per placeholder index. "wordBank" = the correct terms plus 1-2 near-miss distractor terms drawn from related knowledge.
 "explanation" gives the complete sentence and why it matters, in the expert's terms.`,
+  exercise_order: `Write ONE order-the-steps exercise from a procedure in the source knowledge.
+"steps" is the CORRECT order (3-6 steps), each trimmed to a short draggable one-liner (≤12 words) preserving the expert's specifics. The client shuffles them for display.
+"prompt" names the procedure ("Order the steps of ..."). "explanation" says why the order matters, citing the expert's reasoning.`,
 }
 
 export function buildUnitSystemPrompt(
@@ -160,6 +176,10 @@ Return ONLY the JSON object.`
       throw new Error(`exercise_mc invalid: ${content.options.length} options, ${correctCount} correct`)
     }
   }
+  if (content.kind === "exercise_order") {
+    content.steps = content.steps.slice(0, 6)
+    if (content.steps.length < 3) throw new Error(`exercise_order has only ${content.steps.length} steps`)
+  }
   if (content.kind === "exercise_fill") {
     content.blanks = content.blanks.slice(0, 3)
     if (content.blanks.length === 0) throw new Error("exercise_fill has no blanks")
@@ -176,6 +196,7 @@ export function summarizeUnitContent(content: PathUnitContent): string {
     case "lesson_card": return `lesson: ${content.concept}`
     case "exercise_mc": return `mc: ${content.question}`
     case "exercise_fill": return `fill: ${content.sentence.slice(0, 80)}`
+    case "exercise_order": return `order: ${content.prompt}`
     default: return "unit"
   }
 }

@@ -833,3 +833,13 @@ export function submitAttempt(
 export function completeUnit(unitId: string): Promise<{ ok: boolean }> {
   return request(`/learn/unit/${unitId}/complete`, { method: 'POST' })
 }
+
+export function updatePathLevers(
+  pathId: string,
+  data: { goal?: LearnerGoal; dailyMinutes?: number; focusAreas?: string[] }
+): Promise<{ ok: boolean; replanned: boolean; estimatedDays: number | null; preservedUnits?: number }> {
+  return request(`/learn/path/${pathId}/levers`, {
+    method: 'PATCH',
+    body: JSON.stringify(data),
+  })
+}

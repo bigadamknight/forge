@@ -1,7 +1,7 @@
 import { Hono } from "hono"
 import { streamSSE } from "hono/streaming"
 import { db, workspaces, learners, paths, pathUnits, attempts } from "@forge/db"
-import { eq, asc, and } from "drizzle-orm"
+import { eq, asc, and, inArray } from "drizzle-orm"
 import { getWorkspaceExpertInfo } from "../services/expert-context"
 import {
   loadWorkspaceKnowledgeUnits,
@@ -10,6 +10,8 @@ import {
   estimatePathDays,
 } from "../services/path-planner"
 import { buildUnitSystemPrompt, generateUnitContent, summarizeUnitContent } from "../services/unit-generator"
+import { computeSrs, resolveCheckpoint } from "../services/spaced-repetition"
+import { desc } from "drizzle-orm"
 import type { PathSequence } from "@forge/shared"
 
 const app = new Hono()
@@ -164,27 +166,42 @@ app.post("/path/:pathId/next", async (c) => {
   const [path] = await db.select().from(paths).where(eq(paths.id, pathId)).limit(1)
   if (!path) return c.json({ error: "Path not found" }, 404)
 
-  // Serve already-generated units immediately; only block on generation when
-  // nothing is ready. Any shortfall is topped up in the background.
-  let upcoming = await db.select().from(pathUnits)
-    .where(and(eq(pathUnits.pathId, pathId), eq(pathUnits.status, "generated")))
+  // The session is the next units strictly by position. Generate any still-
+  // pending units inside that horizon (instant when the buffer kept up).
+  const horizon = await db.select().from(pathUnits)
+    .where(and(eq(pathUnits.pathId, pathId), inArray(pathUnits.status, ["pending", "generated"])))
     .orderBy(asc(pathUnits.orderIndex))
     .limit(sessionSize)
 
-  if (upcoming.length === 0) {
+  if (horizon.some(u => u.status === "pending")) {
     const expert = await getWorkspaceExpertInfo(path.workspaceId)
     const knowledge = await loadWorkspaceKnowledgeUnits(path.workspaceId)
     const [learner] = await db.select().from(learners).where(eq(learners.id, path.learnerId)).limit(1)
     await generateAhead(pathId, expert, knowledge, learner?.preferences ?? null, sessionSize)
-    upcoming = await db.select().from(pathUnits)
-      .where(and(eq(pathUnits.pathId, pathId), eq(pathUnits.status, "generated")))
-      .orderBy(asc(pathUnits.orderIndex))
-      .limit(sessionSize)
-  } else if (upcoming.length < sessionSize) {
-    topUpBuffer(pathId)
   }
 
-  return c.json({ units: upcoming })
+  const upcoming = await db.select().from(pathUnits)
+    .where(and(eq(pathUnits.pathId, pathId), eq(pathUnits.status, "generated")))
+    .orderBy(asc(pathUnits.orderIndex))
+    .limit(sessionSize)
+
+  // Resolve checkpoints at serve time: review of the learner's weakest recent
+  // exercises (spaced repetition), freshly paraphrased
+  const resolved = []
+  for (const unit of upcoming) {
+    if (unit.kind === "checkpoint" && !unit.content) {
+      const review = await resolveCheckpoint(pathId, path.learnerId)
+      if (review) {
+        await db.update(pathUnits).set({ content: review as any })
+          .where(eq(pathUnits.id, unit.id))
+        resolved.push({ ...unit, content: review })
+        continue
+      }
+    }
+    resolved.push(unit)
+  }
+
+  return c.json({ units: resolved })
 })
 
 // ============ Attempts & completion ============
@@ -197,12 +214,21 @@ app.post("/unit/:unitId/attempt", async (c) => {
   const [unit] = await db.select().from(pathUnits).where(eq(pathUnits.id, unitId)).limit(1)
   if (!unit) return c.json({ error: "Unit not found" }, 404)
 
+  // Spaced-repetition state from this learner's history on this unit
+  const priorAttempts = await db.select({ correct: attempts.correct, ease: attempts.ease })
+    .from(attempts)
+    .where(and(eq(attempts.pathUnitId, unitId), eq(attempts.learnerId, learnerId)))
+    .orderBy(desc(attempts.createdAt))
+  const srs = correct ? computeSrs(priorAttempts, correct) : null
+
   const [attempt] = await db.insert(attempts).values({
     pathUnitId: unitId,
     learnerId,
     answer: answer ?? null,
     correct: correct ?? null,
     latencyMs: latencyMs ?? null,
+    ease: srs?.ease ?? null,
+    dueAt: srs?.dueAt ?? null,
   }).returning()
 
   await db.update(pathUnits).set({
@@ -229,6 +255,103 @@ app.post("/unit/:unitId/complete", async (c) => {
   topUpBuffer(unit.pathId)
 
   return c.json({ ok: true })
+})
+
+// ============ Lever changes (re-plan) ============
+
+app.patch("/path/:pathId/levers", async (c) => {
+  const { pathId } = c.req.param()
+  const { goal, dailyMinutes, focusAreas } = await c.req.json()
+
+  const [path] = await db.select().from(paths).where(eq(paths.id, pathId)).limit(1)
+  if (!path) return c.json({ error: "Path not found" }, 404)
+
+  const newGoal = goal ?? path.goal
+  const newMinutes = dailyMinutes ?? path.dailyMinutes
+  const newFocus = focusAreas ?? path.focusAreas ?? []
+  const contentChanged = newGoal !== path.goal ||
+    JSON.stringify(newFocus) !== JSON.stringify(path.focusAreas ?? [])
+
+  // Time-budget-only change: no content churn, just re-pace
+  if (!contentChanged) {
+    const sequence = path.sequence as PathSequence
+    const estimatedDays = sequence ? estimatePathDays(sequence, newMinutes) : path.estimatedDays
+    await db.update(paths).set({
+      dailyMinutes: newMinutes,
+      estimatedDays,
+      updatedAt: new Date(),
+    }).where(eq(paths.id, pathId))
+    return c.json({ ok: true, replanned: false, estimatedDays })
+  }
+
+  // Goal/focus change: re-run the planner, diff-preserve existing units
+  const expert = await getWorkspaceExpertInfo(path.workspaceId)
+  const knowledge = await loadWorkspaceKnowledgeUnits(path.workspaceId)
+  const [learner] = await db.select().from(learners).where(eq(learners.id, path.learnerId)).limit(1)
+
+  const sequence = await generatePathSkeleton(
+    expert, knowledge, newGoal, newMinutes, newFocus, learner?.preferences ?? null
+  )
+  const estimatedDays = estimatePathDays(sequence, newMinutes)
+
+  const existing = await db.select().from(pathUnits)
+    .where(eq(pathUnits.pathId, pathId))
+    .orderBy(asc(pathUnits.orderIndex))
+
+  // Match new sequence entries to existing units by kind + source-unit set.
+  // Completed units are never discarded (attempt history must survive);
+  // matching pending/generated units are re-linked to their new position.
+  const keyOf = (kind: string, ids: string[] | null) => `${kind}:${[...(ids || [])].sort().join(",")}`
+  const pool = new Map<string, typeof existing[number][]>()
+  for (const u of existing) {
+    const k = keyOf(u.kind, u.sourceUnitIds)
+    ;(pool.get(k) ?? pool.set(k, []).get(k)!).push(u)
+  }
+
+  const keptIds = new Set<string>()
+  let orderIndex = 0
+  for (const milestone of sequence.milestones) {
+    for (const spec of milestone.units) {
+      const k = keyOf(spec.kind, spec.sourceUnitIds)
+      const match = pool.get(k)?.shift()
+      if (match) {
+        await db.update(pathUnits).set({ orderIndex }).where(eq(pathUnits.id, match.id))
+        keptIds.add(match.id)
+      } else {
+        await db.insert(pathUnits).values({
+          pathId,
+          orderIndex,
+          kind: spec.kind,
+          sourceUnitIds: spec.sourceUnitIds,
+        })
+      }
+      orderIndex++
+    }
+  }
+
+  // Unmatched units: completed ones are preserved (parked after the new
+  // sequence, history intact); un-started ones are removed.
+  let parkedIndex = orderIndex
+  for (const u of existing) {
+    if (keptIds.has(u.id)) continue
+    if (u.status === "completed") {
+      await db.update(pathUnits).set({ orderIndex: parkedIndex++ }).where(eq(pathUnits.id, u.id))
+    } else {
+      await db.delete(pathUnits).where(eq(pathUnits.id, u.id))
+    }
+  }
+
+  await db.update(paths).set({
+    goal: newGoal,
+    dailyMinutes: newMinutes,
+    focusAreas: newFocus,
+    sequence,
+    estimatedDays,
+    updatedAt: new Date(),
+  }).where(eq(paths.id, pathId))
+
+  console.log(`[learn] Path ${pathId} re-planned (${keptIds.size} units preserved, ${orderIndex} in new sequence)`)
+  return c.json({ ok: true, replanned: true, estimatedDays, preservedUnits: keptIds.size })
 })
 
 // ============ Helpers ============

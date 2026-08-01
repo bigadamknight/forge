@@ -166,9 +166,10 @@ PostgreSQL 16 via Docker. Schema at `packages/db/src/schema.ts`. Tables: `worksp
 
 Paced learner paths generated from the knowledge layer. Tables: `learners`, `paths`, `path_units`, `attempts`.
 
-- API under `/api/learn` (`routes/learn.ts`): `GET /:workspaceId/focus-areas`, `POST /:workspaceId/onboard` (SSE: plan/unit/complete), `GET /path/:pathId`, `POST /path/:pathId/next` (lazy generation, serves buffered units instantly), `POST /unit/:id/attempt`, `POST /unit/:id/complete` (both top up the generation buffer in background).
-- Frontend routes: `/learn/:workspaceId` (PathPage, node trail + pace), `/learn/:workspaceId/onboard` (three levers + preferences), `/learn/:workspaceId/session` (LessonCard, ExerciseMC, ExerciseClickFill, checkpoint). Learner identity in localStorage `learn-${workspaceId}`.
-- Unit generation is lazy (3-unit buffer ahead of the learner); provenance via `path_units.source_unit_ids` → `knowledge_units`.
+- API under `/api/learn` (`routes/learn.ts`): `GET /:workspaceId/focus-areas`, `POST /:workspaceId/onboard` (SSE: plan/unit/complete), `GET /path/:pathId`, `POST /path/:pathId/next` (serves the next units strictly by position, generating any pending in the horizon; instant when buffered), `PATCH /path/:pathId/levers` (time-only → instant re-pace; goal/focus → planner re-run with diff-preserve: completed units and attempts always survive), `POST /unit/:id/attempt` (records SM-2-lite ease/dueAt via `services/spaced-repetition.ts`), `POST /unit/:id/complete`.
+- Checkpoints are resolved at serve time (`resolveCheckpoint`): the learner's weakest/stalest completed exercises (wrong first, then due), re-served with a Haiku paraphrase as a `checkpoint_review` unit.
+- Frontend routes: `/learn/:workspaceId` (PathPage: node trail, pace, "Adjust path" lever editor), `/learn/:workspaceId/onboard` (three levers + preferences), `/learn/:workspaceId/session` (LessonCard, ExerciseMC, ExerciseClickFill, ExerciseOrderSteps, CheckpointReview). Learner identity in localStorage `learn-${workspaceId}`.
+- Unit generation is lazy (3-unit buffer ahead of the learner); provenance via `path_units.source_unit_ids` → `knowledge_units`. Unit kinds: lesson_card, exercise_mc, exercise_fill, exercise_order, checkpoint.
 
 ## AI Services (apps/api/src/services/)
 
