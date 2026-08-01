@@ -90,6 +90,33 @@ export const WORKSPACE_PAGE_TOOL: InteractionDescriptor = {
   actions: [],
 }
 
+export const LEARN_PATH_PAGE: InteractionDescriptor = {
+  scope: 'page',
+  label: 'Learning Path',
+  summarize: (state) => {
+    const parts = [`Learning path view.`]
+    if (state.pathTitle) parts.push(`Path: "${state.pathTitle}".`)
+    if (state.completed !== undefined) parts.push(`${state.completed}/${state.total} units complete.`)
+    if (state.remainingDays !== undefined) parts.push(`~${state.remainingDays} days remaining at their pace.`)
+    return parts.join(' ')
+  },
+  actions: [],
+}
+
+export const LEARN_SESSION_PAGE: InteractionDescriptor = {
+  scope: 'page',
+  label: 'Learning Session',
+  summarize: (state) => {
+    const parts = [`Learning session in progress.`]
+    if (state.unitKind) parts.push(`Current unit: ${state.unitKind}.`)
+    if (state.unitConcept) parts.push(`Topic: "${state.unitConcept}".`)
+    if (state.unitIndex !== undefined && state.unitCount) parts.push(`Unit ${state.unitIndex + 1} of ${state.unitCount} this session.`)
+    if (state.lastAnswerCorrect !== undefined) parts.push(`Last answer was ${state.lastAnswerCorrect ? 'correct' : 'incorrect'}.`)
+    return parts.join(' ')
+  },
+  actions: [],
+}
+
 export const TOOL_USER_PAGE: InteractionDescriptor = {
   scope: 'page',
   label: 'Tool User',

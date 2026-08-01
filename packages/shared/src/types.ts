@@ -288,6 +288,69 @@ export type ToolComponent =
   | QuizConfig
   | TaskBoardConfig
 
+// ============ Learning Platform (paths, units, attempts) ============
+
+export type LearnerGoal = "basics" | "deep" | "practical"
+
+export interface LearnerPreferences {
+  instructions: string[]
+  tone?: string
+}
+
+export type PathUnitKind =
+  | "lesson_card"
+  | "exercise_mc"
+  | "exercise_fill"
+  | "exercise_order"
+  | "diagram"
+  | "checkpoint"
+  | "review"
+
+// Planner output: milestones of unit specs. path_units rows are created from
+// this sequence lazily as the learner approaches them.
+export interface PathSequence {
+  title: string
+  estimatedWeeks: number
+  milestones: Array<{
+    title: string
+    goal: string
+    focusArea?: string
+    units: Array<{
+      kind: PathUnitKind
+      focus: string
+      sourceUnitIds: string[]
+    }>
+  }>
+}
+
+// Generated unit content shapes (stored in path_units.content)
+export interface LessonCardContent {
+  kind: "lesson_card"
+  variant: "narrative" | "comparison" | "table" | "quote"
+  concept: string
+  body: string
+  comparison?: { leftTitle: string; leftItems: string[]; rightTitle: string; rightItems: string[] }
+  table?: { caption: string; headers: string[]; rows: string[][] }
+  quote?: { text: string; attribution: string }
+}
+
+export interface ExerciseMCContent {
+  kind: "exercise_mc"
+  question: string
+  options: Array<{ id: string; text: string; correct: boolean; explanation: string }>
+}
+
+export interface ExerciseFillContent {
+  kind: "exercise_fill"
+  // sentence with {{0}}, {{1}} placeholders for blanks
+  sentence: string
+  blanks: string[]           // correct term per placeholder index
+  wordBank: string[]         // blanks + near-miss distractors, shuffled client-side
+  explanation: string
+}
+
+export type PathUnitContent = LessonCardContent | ExerciseMCContent | ExerciseFillContent
+
 // ============ Extraction Types ============
 
 export const EXTRACTION_TYPES = [

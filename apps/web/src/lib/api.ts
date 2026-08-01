@@ -737,3 +737,99 @@ export function createInterview(
     body: JSON.stringify({ topic }),
   })
 }
+
+// ============ Learning Platform API ============
+
+import type { PathSequence, PathUnitKind, PathUnitContent, LearnerGoal, LearnerPreferences } from '@forge/shared'
+
+export interface PathUnitSummary {
+  id: string
+  orderIndex: number
+  kind: PathUnitKind
+  status: 'pending' | 'generated' | 'completed' | 'skipped'
+}
+
+export interface PathUnitFull extends PathUnitSummary {
+  pathId: string
+  content: PathUnitContent | null
+  sourceUnitIds: string[] | null
+}
+
+export interface LearnPath {
+  id: string
+  learnerId: string
+  workspaceId: string
+  goal: LearnerGoal
+  dailyMinutes: number
+  focusAreas: string[] | null
+  sequence: PathSequence | null
+  status: 'active' | 'completed' | 'archived'
+  estimatedDays: number | null
+}
+
+export interface PathResponse {
+  path: LearnPath
+  units: PathUnitSummary[]
+  progress: { completed: number; total: number; remainingDays: number }
+}
+
+export type OnboardEvent =
+  | { type: 'plan'; learnerId: string; pathId: string; sequence: PathSequence; estimatedDays: number }
+  | { type: 'unit'; unitId: string; orderIndex: number; content: PathUnitContent }
+  | { type: 'complete'; pathId: string }
+  | { type: 'error'; message: string }
+
+export function getFocusAreas(workspaceId: string): Promise<{ focusAreas: string[]; knowledgeCount: number }> {
+  return request(`/learn/${workspaceId}/focus-areas`)
+}
+
+export function onboardLearner(
+  workspaceId: string,
+  data: {
+    displayName?: string
+    goal: LearnerGoal
+    dailyMinutes: number
+    focusAreas: string[]
+    preferences?: LearnerPreferences
+  },
+  onEvent: (event: OnboardEvent) => void,
+  onDone: () => void,
+  onError: (error: string) => void
+): AbortController {
+  return streamSSE(
+    `${API_BASE}/learn/${workspaceId}/onboard`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    },
+    onEvent,
+    onDone,
+    onError
+  )
+}
+
+export function getPath(pathId: string): Promise<PathResponse> {
+  return request(`/learn/path/${pathId}`)
+}
+
+export function getNextUnits(pathId: string, count = 5): Promise<{ units: PathUnitFull[] }> {
+  return request(`/learn/path/${pathId}/next`, {
+    method: 'POST',
+    body: JSON.stringify({ count }),
+  })
+}
+
+export function submitAttempt(
+  unitId: string,
+  data: { learnerId: string; answer?: unknown; correct?: 'yes' | 'no' | 'partial'; latencyMs?: number }
+): Promise<{ ok: boolean; attemptId: string }> {
+  return request(`/learn/unit/${unitId}/attempt`, {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+}
+
+export function completeUnit(unitId: string): Promise<{ ok: boolean }> {
+  return request(`/learn/unit/${unitId}/complete`, { method: 'POST' })
+}

@@ -6,6 +6,7 @@ import { generateToolConfig, generateToolPlan, generateComponent, buildKnowledge
 import { generateText, generateJSON, HAIKU } from "../lib/llm"
 import { searchUnitsHybrid, hasUnitEmbeddings } from "../lib/embeddings"
 import { validateComponentConfig } from "../lib/component-validation"
+import { buildExpertContext, getWorkspaceExpertInfo, loadExpertKnowledge } from "../services/expert-context"
 import { buildComponentPromptSummary, buildToolUsageRules } from "@forge/shared"
 
 const app = new Hono()
@@ -41,43 +42,6 @@ async function loadWorkspaceDocuments(workspaceId: string) {
   return items.map((d) => ({
     title: d.title, type: d.type, content: d.extractedContent || d.content,
   }))
-}
-
-async function loadExpertKnowledge(workspaceId: string, query: string, limit = 15): Promise<string> {
-  // Workspace-scoped hybrid search over the curated knowledge layer
-  if (await hasUnitEmbeddings(workspaceId)) {
-    const results = await searchUnitsHybrid(workspaceId, query, limit)
-    if (results.length > 0) {
-      return results.map((r) => `[${r.type}] ${r.content}`).join("\n")
-    }
-  }
-
-  // Fallback: raw extractions across the workspace's forges
-  const forgeIds = await getWorkspaceForgeIds(workspaceId)
-  if (forgeIds.length === 0) return ""
-  const all = await db.select().from(extractions)
-    .where(inArray(extractions.forgeId, forgeIds))
-    .orderBy(asc(extractions.createdAt))
-  return all.slice(0, limit + 25).map((e) => `[${e.type}] ${e.content}`).join("\n")
-}
-
-// Get expert info from the workspace's first completed interview
-async function getWorkspaceExpertInfo(workspaceId: string) {
-  const [interview] = await db.select({
-    expertName: forges.expertName,
-    domain: forges.domain,
-    targetAudience: forges.targetAudience,
-    metadata: forges.metadata,
-  }).from(forges)
-    .where(eq(forges.workspaceId, workspaceId))
-    .orderBy(forges.createdAt)
-    .limit(1)
-  return {
-    expertName: interview?.expertName || "Expert",
-    domain: interview?.domain || "General",
-    targetAudience: interview?.targetAudience || null,
-    metadata: interview?.metadata || null,
-  }
 }
 
 // ============ Generate Tool from Knowledge ============
@@ -321,49 +285,13 @@ app.post("/:workspaceId/tool/ask", async (c) => {
   const workspace = await getWorkspace(workspaceId)
   if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  const expert = await getWorkspaceExpertInfo(workspaceId)
-  const expertKnowledge = await loadExpertKnowledge(workspaceId, question, 15)
+  const { expert, preamble } = await buildExpertContext(workspaceId, {
+    query: question,
+    componentContext,
+    userContext,
+  })
 
-  const allDocuments = await db.select().from(documents)
-    .where(eq(documents.workspaceId, workspaceId))
-    .orderBy(asc(documents.createdAt))
-  const documentContext = allDocuments.length > 0
-    ? `\n\nSUPPORTING DOCUMENTS:\n${allDocuments.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 5000)}`).join("\n\n")}`
-    : ""
-
-  // Gather voice transcripts from all interviews
-  const allInterviews = await db.select({ metadata: forges.metadata }).from(forges)
-    .where(eq(forges.workspaceId, workspaceId))
-  let voiceTranscript = ""
-  for (const interview of allInterviews) {
-    const meta = (interview.metadata as any) || {}
-    if (Array.isArray(meta.voiceTranscript)) {
-      voiceTranscript += meta.voiceTranscript
-        .filter((m: any) => m.role === "user")
-        .slice(-10)
-        .map((m: any) => m.content)
-        .join("\n") + "\n"
-    }
-  }
-  const transcriptContext = voiceTranscript
-    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript.trim()}`
-    : ""
-
-  // Build cascading context (5 layers)
-  const system = `You are an AI assistant that channels the expertise of ${expert.expertName} in ${expert.domain}.
-
-LAYER 1 - DOMAIN CONTEXT:
-${expert.domain}. ${expert.targetAudience ? `This tool is designed for: ${expert.targetAudience}` : ""}
-
-LAYER 2 - EXPERT KNOWLEDGE:
-The following knowledge was extracted directly from ${expert.expertName}:
-${expertKnowledge}${transcriptContext}${documentContext}
-
-LAYER 3 - TOOL CONTEXT:
-${componentContext ? `The user is currently looking at: ${componentContext}` : "They are using an interactive guide built from this expert's knowledge."}
-
-LAYER 4 - USER SITUATION:
-${userContext ? `About the user: ${JSON.stringify(userContext)}` : "No specific context provided."}
+  const system = `${preamble}
 
 LAYER 5 - CURRENT QUESTION:
 The user is asking: ${question}
@@ -395,48 +323,11 @@ app.post("/:workspaceId/tool/advice", async (c) => {
   const workspace = await getWorkspace(workspaceId)
   if (!workspace) return c.json({ error: "Workspace not found" }, 404)
 
-  const expert = await getWorkspaceExpertInfo(workspaceId)
-  const expertKnowledge = await loadExpertKnowledge(workspaceId, question, 15)
-
-  const allDocuments = await db.select().from(documents)
-    .where(eq(documents.workspaceId, workspaceId))
-    .orderBy(asc(documents.createdAt))
-  const documentContext = allDocuments.length > 0
-    ? `\n\nSUPPORTING DOCUMENTS:\n${allDocuments.map((d) => `[${d.title}] ${(d.extractedContent || d.content).slice(0, 5000)}`).join("\n\n")}`
-    : ""
-
-  // Gather voice transcripts from all interviews
-  const allInterviews = await db.select({ metadata: forges.metadata }).from(forges)
-    .where(eq(forges.workspaceId, workspaceId))
-  let voiceTranscript = ""
-  for (const interview of allInterviews) {
-    const meta = (interview.metadata as any) || {}
-    if (Array.isArray(meta.voiceTranscript)) {
-      voiceTranscript += meta.voiceTranscript
-        .filter((m: any) => m.role === "user")
-        .slice(-10)
-        .map((m: any) => m.content)
-        .join("\n") + "\n"
-    }
-  }
-  const transcriptContext = voiceTranscript
-    ? `\n\nVOICE INTERVIEW TRANSCRIPT (expert's own words):\n${voiceTranscript.trim()}`
-    : ""
-
-  const contextPreamble = `You are an AI assistant that channels the expertise of ${expert.expertName} in ${expert.domain}.
-
-LAYER 1 - DOMAIN CONTEXT:
-${expert.domain}. ${expert.targetAudience ? `This tool is designed for: ${expert.targetAudience}` : ""}
-
-LAYER 2 - EXPERT KNOWLEDGE:
-The following knowledge was extracted directly from ${expert.expertName}:
-${expertKnowledge}${transcriptContext}${documentContext}
-
-LAYER 3 - TOOL CONTEXT:
-${componentContext ? `The user is currently looking at: ${componentContext}` : "They are using an interactive guide built from this expert's knowledge."}
-
-LAYER 4 - USER SITUATION:
-${userContext ? `About the user: ${JSON.stringify(userContext)}` : "No specific context provided."}`
+  const { expert, preamble: contextPreamble } = await buildExpertContext(workspaceId, {
+    query: question,
+    componentContext,
+    userContext,
+  })
 
   return streamSSE(c, async (stream) => {
     try {

@@ -162,6 +162,14 @@ PostgreSQL 16 via Docker. Schema at `packages/db/src/schema.ts`. Tables: `worksp
 - `knowledge_units` is the curated, workspace-scoped knowledge layer: extractions are promoted into it (status `proposed`) when an interview round completes (`promoteExtractionsToUnits` in `services/knowledge-base.ts`), with embeddings and workspace-scoped hybrid search (`searchUnitsHybrid` in `lib/embeddings.ts`). `loadExpertKnowledge` reads from it, falling back to raw extractions.
 - `tool_advice` persists `/tool/advice` output (question, userContext, generated sections); `GET /:workspaceId/tool/advice` lists saved advice.
 
+## Learning Platform (Phase 1 — see docs/learning-platform-brief.md)
+
+Paced learner paths generated from the knowledge layer. Tables: `learners`, `paths`, `path_units`, `attempts`.
+
+- API under `/api/learn` (`routes/learn.ts`): `GET /:workspaceId/focus-areas`, `POST /:workspaceId/onboard` (SSE: plan/unit/complete), `GET /path/:pathId`, `POST /path/:pathId/next` (lazy generation, serves buffered units instantly), `POST /unit/:id/attempt`, `POST /unit/:id/complete` (both top up the generation buffer in background).
+- Frontend routes: `/learn/:workspaceId` (PathPage, node trail + pace), `/learn/:workspaceId/onboard` (three levers + preferences), `/learn/:workspaceId/session` (LessonCard, ExerciseMC, ExerciseClickFill, checkpoint). Learner identity in localStorage `learn-${workspaceId}`.
+- Unit generation is lazy (3-unit buffer ahead of the learner); provenance via `path_units.source_unit_ids` → `knowledge_units`.
+
 ## AI Services (apps/api/src/services/)
 
 - `interview-planner.ts` - generates interview config from expert intro
@@ -171,6 +179,9 @@ PostgreSQL 16 via Docker. Schema at `packages/db/src/schema.ts`. Tables: `worksp
 - `tool-generator.ts` - plan + parallel component generation + operations board
 - `interview-progress.ts` - shared advancement/completion engine used by BOTH text (`routes/interviews.ts`) and voice (`routes/voice.ts`) paths — voice keeps its extraction-count gate but advancement mechanics and round completion are unified
 - `knowledge-base.ts` - promotes extractions to `knowledge_units` on round completion (idempotent)
+- `expert-context.ts` - shared 5-layer expert context (`buildExpertContext`) used by tool/ask, tool/advice, and unit generation
+- `path-planner.ts` - learning-path skeleton (Opus, schema-validated, knowledge-unit provenance, caps in code)
+- `unit-generator.ts` - per-unit content generation (lesson_card / exercise_mc / exercise_fill, cached Sonnet)
 
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence

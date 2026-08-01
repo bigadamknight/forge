@@ -6,6 +6,7 @@ import toolsRoute from "./routes/tools"
 import voiceRoute from "./routes/voice"
 import documentsRoute from "./routes/documents"
 import workspacesRoute from "./routes/workspaces"
+import learnRoute from "./routes/learn"
 
 const app = new Hono()
 
@@ -18,6 +19,7 @@ app.use("/*", cors({
 }))
 
 app.route("/api/workspaces", workspacesRoute)
+app.route("/api/learn", learnRoute)
 app.route("/api/workspaces", toolsRoute)
 app.route("/api/workspaces", documentsRoute)
 app.route("/api/forges", forgesRoute)

@@ -7,6 +7,9 @@ import InterviewPage from './pages/InterviewPage'
 import DocumentUploadPage from './pages/DocumentUploadPage'
 import WorkspacePage from './pages/WorkspacePage'
 import ToolUserPage from './pages/ToolUserPage'
+import LearnerOnboardingPage from './pages/LearnerOnboardingPage'
+import PathPage from './pages/PathPage'
+import SessionPage from './pages/SessionPage'
 
 export default function App() {
   return (
@@ -20,6 +23,9 @@ export default function App() {
           <Route path="/workspace/:workspaceId/interview/:forgeId" element={<InterviewPage />} />
           <Route path="/workspace/:workspaceId/documents" element={<DocumentUploadPage />} />
           <Route path="/tool/:workspaceId" element={<ToolUserPage />} />
+          <Route path="/learn/:workspaceId" element={<PathPage />} />
+          <Route path="/learn/:workspaceId/onboard" element={<LearnerOnboardingPage />} />
+          <Route path="/learn/:workspaceId/session" element={<SessionPage />} />
         </Routes>
       </div>
     </InteractionProvider>

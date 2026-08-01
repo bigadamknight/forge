@@ -16,6 +16,10 @@ import type {
   ValidationResult,
   SectionSummary,
   InterviewDepth,
+  LearnerGoal,
+  LearnerPreferences,
+  PathSequence,
+  PathUnitKind,
 } from "@forge/shared"
 
 // ============ Workspaces ============
@@ -232,6 +236,94 @@ export const toolAdvice = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (table) => [index("idx_tool_advice_workspace").on(table.workspaceId)]
+)
+
+// ============ Learning Platform ============
+
+export const learners = pgTable(
+  "learners",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    displayName: text("display_name"),
+    preferences: jsonb("preferences").$type<LearnerPreferences>(),
+    context: jsonb("context"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("idx_learners_workspace").on(table.workspaceId)]
+)
+
+export const paths = pgTable(
+  "paths",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    learnerId: uuid("learner_id")
+      .notNull()
+      .references(() => learners.id, { onDelete: "cascade" }),
+    workspaceId: uuid("workspace_id")
+      .notNull()
+      .references(() => workspaces.id, { onDelete: "cascade" }),
+    goal: text("goal").$type<LearnerGoal>().notNull(),
+    dailyMinutes: smallint("daily_minutes").notNull(),
+    focusAreas: jsonb("focus_areas").$type<string[]>(),
+    sequence: jsonb("sequence").$type<PathSequence>(),
+    status: text("status", { enum: ["active", "completed", "archived"] })
+      .default("active")
+      .notNull(),
+    estimatedDays: integer("estimated_days"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [index("idx_paths_learner").on(table.learnerId)]
+)
+
+export const pathUnits = pgTable(
+  "path_units",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    pathId: uuid("path_id")
+      .notNull()
+      .references(() => paths.id, { onDelete: "cascade" }),
+    orderIndex: integer("order_index").notNull(),
+    kind: text("kind").$type<PathUnitKind>().notNull(),
+    content: jsonb("content"),
+    sourceUnitIds: jsonb("source_unit_ids").$type<string[]>(),
+    status: text("status", { enum: ["pending", "generated", "completed", "skipped"] })
+      .default("pending")
+      .notNull(),
+    generatedAt: timestamp("generated_at", { withTimezone: true }),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("idx_pu_path").on(table.pathId),
+    index("idx_pu_path_order").on(table.pathId, table.orderIndex),
+  ]
+)
+
+export const attempts = pgTable(
+  "attempts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    pathUnitId: uuid("path_unit_id")
+      .notNull()
+      .references(() => pathUnits.id, { onDelete: "cascade" }),
+    learnerId: uuid("learner_id")
+      .notNull()
+      .references(() => learners.id, { onDelete: "cascade" }),
+    answer: jsonb("answer"),
+    correct: text("correct", { enum: ["yes", "no", "partial"] }),
+    latencyMs: integer("latency_ms"),
+    ease: real("ease"),
+    dueAt: timestamp("due_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    index("idx_attempts_learner").on(table.learnerId),
+    index("idx_attempts_due").on(table.learnerId, table.dueAt),
+  ]
 )
 
 // ============ Tool Sessions ============

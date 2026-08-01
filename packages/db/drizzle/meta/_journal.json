@@ -71,6 +71,13 @@
       "when": 1774000100000,
       "tag": "0009_tool_advice",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1774100000000,
+      "tag": "0010_learning",
+      "breakpoints": true
     }
   ]
 }
