@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: forge
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "5462:5432"
+      - "5463:5432"
     volumes:
       - forge_prod_data:/var/lib/postgresql/data
     healthcheck:
