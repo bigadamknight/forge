@@ -30,6 +30,18 @@ Or `./stack start` for all services. `./stack help` for all commands.
 
 **Vite proxy:** `/api` requests on :3070 proxy to :3071, so frontend code uses relative `/api` paths.
 
+## Deployment
+
+Production: https://forge.brainsteam.cloud
+
+```
+SERVER:       hetzner-ts
+DEPLOY_PATH:  /var/www/apps/deployments/production/forge
+COMPOSE_FILE: docker-compose.production.yml
+```
+
+Git-pull workflow only: push to main, then on the server `git pull origin main && docker compose -f docker-compose.production.yml build && docker compose -f docker-compose.production.yml up -d`. Migrations: `docker exec forge-api sh -c 'cd packages/db && bun run migrate'`. Containers: `forge-web` (:3190, nginx serving SPA + /api proxy), `forge-api` (:3191), `forge-prod-postgres` (:5463, pgvector). Env lives in `.env` on the server (backup: `env_backup_forge`).
+
 ## Ports
 
 - **Frontend:** 3070
