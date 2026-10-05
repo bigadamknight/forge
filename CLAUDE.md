@@ -42,6 +42,8 @@ COMPOSE_FILE: docker-compose.production.yml
 
 Git-pull workflow only: push to main, then on the server `git pull origin main && docker compose -f docker-compose.production.yml build && docker compose -f docker-compose.production.yml up -d`. Migrations: `docker exec forge-api sh -c 'cd packages/db && bun run migrate'`. Containers: `forge-web` (:3190, nginx serving SPA + /api proxy), `forge-api` (:3191), `forge-prod-postgres` (:5463, pgvector). Env lives in `.env` on the server (backup: `env_backup_forge`).
 
+**Embedding switch deploy (migration 0011):** add `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`, `BEDROCK_EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` to the server `.env`, deploy as above, then migrate and backfill (migration 0011 NULLs every embedding, so semantic search returns nothing until the backfill finishes): `docker exec forge-api sh -c 'cd packages/db && bun run migrate'` then `docker exec forge-api sh -c 'cd packages/db && bun run backfill-embeddings'`. Locally: `./stack db:migrate` then `bun run --cwd packages/db backfill-embeddings`.
+
 ## Ports
 
 - **Frontend:** 3070
@@ -68,6 +70,10 @@ Copy `.env.example` to `.env`. The API symlinks to root `.env` (`apps/api/.env -
 - `DATABASE_URL` - PostgreSQL connection string
 - `ANTHROPIC_API_KEY` - Claude API key
 - `ELEVENLABS_API_KEY` - Voice interview agents
+- `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` (`eu-west-2`) - Bedrock embeddings (IAM user `forge-bedrock`, AWS SDK default chain). Without credentials, semantic search is off and keyword search is used.
+- `BEDROCK_EMBEDDING_MODEL` (`amazon.titan-embed-text-v2:0`), `EMBEDDING_DIMENSIONS` (`1024`) - optional overrides
+
+**Embeddings:** Amazon Bedrock Titan Text Embeddings V2, 1024 dims, via `createEmbeddingClient` in `packages/db/src/embedding-client.ts` (one input per call, concurrency 10, `normalize: true`). `apps/api/src/lib/embeddings.ts` and `packages/mcp/src/search.ts` both delegate to it. `embedding_cache` is keyed on `(content_hash, model)`. The `embedding` columns on `extractions`, `knowledge_units` and `embedding_cache` are `vector(1024)` with HNSW cosine indexes (raw SQL in migrations, not in `schema.ts`). `packages/mcp` runs outside Docker via `./stack mcp` and reads AWS vars from the root `.env`. Tests: `bun test --cwd packages/db`.
 
 ## Pipeline
 

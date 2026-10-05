@@ -67,6 +67,7 @@ docker compose up -d
 # Configure environment
 cp .env.example .env
 # Add your ANTHROPIC_API_KEY and ELEVENLABS_API_KEY
+# For semantic search, add AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY (Bedrock access, region eu-west-2)
 
 # Run migrations and seed data
 ./stack db:migrate
@@ -90,6 +91,11 @@ packages/
   mcp/          MCP server for forge knowledge
 e2e/            Playwright E2E tests
 ```
+
+## MCP server
+
+`./stack mcp` runs `packages/mcp` over stdio from the repo root, outside Docker, so Bun loads the root `.env`.
+Besides `DATABASE_URL`, set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` and `AWS_REGION` there (or in the `env` block of your MCP client config) to enable semantic search through Bedrock. Without them, search falls back to keyword only.
 
 ## Development
 
