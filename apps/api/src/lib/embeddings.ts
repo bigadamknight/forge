@@ -1,117 +1,46 @@
-import { db } from "@forge/db"
+import {
+  db,
+  createEmbeddingClientFromEnv,
+  createPgEmbeddingCache,
+  embedBatchCached,
+  embedCached,
+  isEmbeddingConfigured,
+  toVectorStr,
+  type EmbeddingClient,
+} from "@forge/db"
 import { sql } from "drizzle-orm"
-import { createHash } from "crypto"
 
-const EMBEDDING_URL = process.env.AZURE_OPENAI_EMBEDDING_URL
-const EMBEDDING_API_KEY = process.env.AZURE_OPENAI_EMBEDDING_API_KEY
-const MAX_TEXT_LENGTH = 30000
+const cache = createPgEmbeddingCache(db)
+let client: EmbeddingClient | null = null
 
-function truncateAndHash(text: string): { truncated: string; hash: string } {
-  const truncated = text.slice(0, MAX_TEXT_LENGTH)
-  const hash = createHash("sha256").update(truncated).digest("hex")
-  return { truncated, hash }
-}
-
-function toVectorStr(embedding: number[]): string {
-  return `[${embedding.join(",")}]`
-}
-
-async function getCachedEmbedding(hash: string): Promise<number[] | null> {
-  const cached = await db.execute(
-    sql`SELECT embedding::text as embedding FROM embedding_cache WHERE content_hash = ${hash}`
-  )
-  if (cached.length > 0) {
-    return parseVector((cached[0] as any).embedding)
-  }
-  return null
-}
-
-async function cacheEmbedding(hash: string, embedding: number[]): Promise<void> {
-  const vectorStr = toVectorStr(embedding)
-  await db.execute(
-    sql`INSERT INTO embedding_cache (content_hash, embedding) VALUES (${hash}, ${vectorStr}::vector) ON CONFLICT (content_hash) DO NOTHING`
-  )
-}
-
-async function callAzureEmbedding(input: string | string[]): Promise<Response | null> {
-  if (!EMBEDDING_URL || !EMBEDDING_API_KEY) return null
-
-  const response = await fetch(EMBEDDING_URL, {
-    method: "POST",
-    headers: {
-      "api-key": EMBEDDING_API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ input }),
-  })
-
-  if (!response.ok) {
-    console.error(`[embeddings] Azure API error: ${response.status} ${response.statusText}`)
-    return null
-  }
-
-  return response
+function getClient(): EmbeddingClient | null {
+  if (!isEmbeddingConfigured()) return null
+  client ??= createEmbeddingClientFromEnv()
+  return client
 }
 
 // ============ Embedding Generation ============
 
 export async function generateEmbedding(text: string): Promise<number[] | null> {
-  if (!EMBEDDING_URL || !EMBEDDING_API_KEY) return null
-
-  const { truncated, hash } = truncateAndHash(text)
-
-  const cached = await getCachedEmbedding(hash)
-  if (cached) return cached
-
-  const response = await callAzureEmbedding(truncated)
-  if (!response) return null
-
-  const data = await response.json()
-  const embedding: number[] = data.data[0].embedding
-
-  await cacheEmbedding(hash, embedding)
-  return embedding
+  const c = getClient()
+  if (!c) return null
+  try {
+    return await embedCached(c, cache, text)
+  } catch (err) {
+    console.error("[embeddings] Bedrock embedding failed:", err)
+    return null
+  }
 }
 
 export async function generateBatchEmbeddings(texts: string[]): Promise<(number[] | null)[]> {
-  if (!EMBEDDING_URL || !EMBEDDING_API_KEY) return texts.map(() => null)
-
-  const results: (number[] | null)[] = new Array(texts.length).fill(null)
-  const uncachedIndices: number[] = []
-  const uncachedTexts: string[] = []
-  const uncachedHashes: string[] = []
-
-  // Check cache for all texts
-  for (let i = 0; i < texts.length; i++) {
-    const { truncated, hash } = truncateAndHash(texts[i])
-    const cached = await getCachedEmbedding(hash)
-    if (cached) {
-      results[i] = cached
-    } else {
-      uncachedIndices.push(i)
-      uncachedTexts.push(truncated)
-      uncachedHashes.push(hash)
-    }
+  const c = getClient()
+  if (!c) return texts.map(() => null)
+  try {
+    return await embedBatchCached(c, cache, texts)
+  } catch (err) {
+    console.error("[embeddings] Bedrock batch embedding failed:", err)
+    return texts.map(() => null)
   }
-
-  // Batch embed uncached texts (16 at a time per Azure limits)
-  const BATCH_SIZE = 16
-  for (let start = 0; start < uncachedTexts.length; start += BATCH_SIZE) {
-    const batch = uncachedTexts.slice(start, start + BATCH_SIZE)
-
-    const response = await callAzureEmbedding(batch)
-    if (!response) continue
-
-    const data = await response.json()
-    for (const item of data.data) {
-      const idx = start + item.index
-      const embedding: number[] = item.embedding
-      results[uncachedIndices[idx]] = embedding
-      await cacheEmbedding(uncachedHashes[idx], embedding)
-    }
-  }
-
-  return results
 }
 
 // ============ Search Functions ============
@@ -287,7 +216,7 @@ export async function hasUnitEmbeddings(workspaceId: string): Promise<boolean> {
 }
 
 export function embedKnowledgeUnitAsync(unitId: string, type: string, content: string) {
-  if (!EMBEDDING_URL || !EMBEDDING_API_KEY) return
+  if (!isEmbeddingConfigured()) return
 
   generateEmbedding(`[${type}] ${content}`).then((embedding) => {
     if (!embedding) return
@@ -300,12 +229,8 @@ export function embedKnowledgeUnitAsync(unitId: string, type: string, content: s
 
 // ============ Helpers ============
 
-function parseVector(vectorStr: string): number[] {
-  return vectorStr.replace(/[\[\]]/g, "").split(",").map(Number)
-}
-
 export function embedExtractionAsync(extractionId: string, type: string, content: string) {
-  if (!EMBEDDING_URL || !EMBEDDING_API_KEY) return
+  if (!isEmbeddingConfigured()) return
 
   generateEmbedding(`[${type}] ${content}`).then((embedding) => {
     if (!embedding) return

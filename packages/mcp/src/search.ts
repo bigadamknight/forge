@@ -1,10 +1,13 @@
-import { db } from "@forge/db"
+import {
+  db,
+  createEmbeddingClientFromEnv,
+  createPgEmbeddingCache,
+  embedCached,
+  isEmbeddingConfigured,
+  toVectorStr,
+  type EmbeddingClient,
+} from "@forge/db"
 import { sql } from "drizzle-orm"
-import { createHash } from "crypto"
-
-const EMBEDDING_URL = process.env.AZURE_OPENAI_EMBEDDING_URL
-const EMBEDDING_API_KEY = process.env.AZURE_OPENAI_EMBEDDING_API_KEY
-const MAX_TEXT_LENGTH = 30000
 
 export interface SearchResult {
   id: string
@@ -15,46 +18,25 @@ export interface SearchResult {
   score: number
 }
 
+const cache = createPgEmbeddingCache(db)
+let client: EmbeddingClient | null = null
+
 async function generateEmbedding(text: string): Promise<number[] | null> {
-  if (!EMBEDDING_URL || !EMBEDDING_API_KEY) return null
-
-  const truncated = text.slice(0, MAX_TEXT_LENGTH)
-  const hash = createHash("sha256").update(truncated).digest("hex")
-
-  const cached = await db.execute(
-    sql`SELECT embedding::text as embedding FROM embedding_cache WHERE content_hash = ${hash}`
-  )
-  if (cached.length > 0) {
-    return parseVector((cached[0] as any).embedding)
+  if (!isEmbeddingConfigured()) return null
+  client ??= createEmbeddingClientFromEnv()
+  try {
+    return await embedCached(client, cache, text)
+  } catch (err) {
+    console.error("[search] Bedrock embedding failed:", err)
+    return null
   }
-
-  const response = await fetch(EMBEDDING_URL, {
-    method: "POST",
-    headers: {
-      "api-key": EMBEDDING_API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ input: truncated }),
-  })
-
-  if (!response.ok) return null
-
-  const data = await response.json()
-  const embedding: number[] = data.data[0].embedding
-
-  const vectorStr = `[${embedding.join(",")}]`
-  await db.execute(
-    sql`INSERT INTO embedding_cache (content_hash, embedding) VALUES (${hash}, ${vectorStr}::vector) ON CONFLICT (content_hash) DO NOTHING`
-  )
-
-  return embedding
 }
 
 async function searchSimilar(forgeId: string, query: string, topK: number): Promise<SearchResult[]> {
   const queryEmbedding = await generateEmbedding(query)
   if (!queryEmbedding) return []
 
-  const vectorStr = `[${queryEmbedding.join(",")}]`
+  const vectorStr = toVectorStr(queryEmbedding)
   const rows = await db.execute(
     sql`SELECT id, type, content, confidence, tags::text as tags, embedding <=> ${vectorStr}::vector AS distance
         FROM extractions
@@ -129,8 +111,4 @@ export async function hasEmbeddings(forgeId: string): Promise<boolean> {
     sql`SELECT COUNT(*) as count FROM extractions WHERE forge_id = ${forgeId} AND embedding IS NOT NULL`
   )
   return parseInt((result[0] as any).count) > 0
-}
-
-function parseVector(vectorStr: string): number[] {
-  return vectorStr.replace(/[\[\]]/g, "").split(",").map(Number)
 }

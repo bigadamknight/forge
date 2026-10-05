@@ -1,90 +1,64 @@
 /**
- * Backfill embeddings for existing extractions that don't have them yet.
+ * Backfill embeddings for extractions and knowledge units that don't have them yet.
+ * Run after migration 0011 (which NULLs every embedding for the Bedrock switch).
  *
- * Usage: bun run --cwd packages/db src/backfill-embeddings.ts
+ * Usage: bun run --cwd packages/db backfill-embeddings
+ * Needs DATABASE_URL, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION.
  */
 import { db } from "./index"
 import { sql } from "drizzle-orm"
-import { createHash } from "crypto"
+import {
+  createEmbeddingClientFromEnv,
+  createPgEmbeddingCache,
+  embedBatchCached,
+  isEmbeddingConfigured,
+  toVectorStr,
+} from "./embedding-client"
 
-const EMBEDDING_URL = process.env.AZURE_OPENAI_EMBEDDING_URL
-const EMBEDDING_API_KEY = process.env.AZURE_OPENAI_EMBEDDING_API_KEY
-const BATCH_SIZE = 16
-const MAX_TEXT_LENGTH = 30000
+const BATCH_SIZE = 50
 
-if (!EMBEDDING_URL || !EMBEDDING_API_KEY) {
-  console.error("Missing AZURE_OPENAI_EMBEDDING_URL or AZURE_OPENAI_EMBEDDING_API_KEY")
+if (!isEmbeddingConfigured()) {
+  console.error("Missing AWS credentials (AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or AWS_PROFILE)")
   process.exit(1)
 }
 
-async function backfill() {
-  // Get all extractions without embeddings
-  const rows = await db.execute(
-    sql`SELECT id, type, content FROM extractions WHERE embedding IS NULL ORDER BY created_at ASC`
-  )
+const client = createEmbeddingClientFromEnv()
+const cache = createPgEmbeddingCache(db)
 
-  const total = rows.length
-  if (total === 0) {
-    console.log("All extractions already have embeddings.")
-    process.exit(0)
+async function backfillTable(table: "extractions" | "knowledge_units"): Promise<number> {
+  const rows = (await db.execute(
+    sql`SELECT id, type, content FROM ${sql.identifier(table)} WHERE embedding IS NULL ORDER BY created_at ASC`
+  )) as any[]
+
+  if (rows.length === 0) {
+    console.log(`${table}: all rows already have embeddings.`)
+    return 0
   }
+  console.log(`${table}: ${rows.length} rows without embeddings (model ${client.model}, ${client.dimensions} dims)...`)
 
-  console.log(`Found ${total} extractions without embeddings. Processing in batches of ${BATCH_SIZE}...`)
-
-  let processed = 0
   let errors = 0
-  const items = rows as any[]
-
-  for (let start = 0; start < total; start += BATCH_SIZE) {
-    const batch = items.slice(start, start + BATCH_SIZE)
-    const texts = batch.map((r: any) => `[${r.type}] ${r.content}`.slice(0, MAX_TEXT_LENGTH))
-
+  for (let start = 0; start < rows.length; start += BATCH_SIZE) {
+    const batch = rows.slice(start, start + BATCH_SIZE)
     try {
-      const response = await fetch(EMBEDDING_URL!, {
-        method: "POST",
-        headers: {
-          "api-key": EMBEDDING_API_KEY!,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ input: texts }),
-      })
-
-      if (!response.ok) {
-        console.error(`Batch error at ${start}: ${response.status} ${response.statusText}`)
-        errors += batch.length
-        continue
-      }
-
-      const data = await response.json()
-
-      for (const item of data.data) {
-        const row = batch[item.index]
-        const embedding: number[] = item.embedding
-        const vectorStr = `[${embedding.join(",")}]`
-
-        // Update extraction
+      const embeddings = await embedBatchCached(client, cache, batch.map((r) => `[${r.type}] ${r.content}`))
+      for (let i = 0; i < batch.length; i++) {
         await db.execute(
-          sql`UPDATE extractions SET embedding = ${vectorStr}::vector WHERE id = ${row.id}`
+          sql`UPDATE ${sql.identifier(table)} SET embedding = ${toVectorStr(embeddings[i])}::vector WHERE id = ${batch[i].id}`
         )
-
-        // Cache the embedding
-        const hash = createHash("sha256").update(texts[item.index]).digest("hex")
-        await db.execute(
-          sql`INSERT INTO embedding_cache (content_hash, embedding) VALUES (${hash}, ${vectorStr}::vector) ON CONFLICT (content_hash) DO NOTHING`
-        )
-
-        processed++
       }
-
-      console.log(`  Processed ${Math.min(start + BATCH_SIZE, total)}/${total}`)
+      console.log(`  ${table}: ${Math.min(start + BATCH_SIZE, rows.length)}/${rows.length}`)
     } catch (err) {
-      console.error(`Batch error at ${start}:`, err)
+      console.error(`  ${table}: batch error at ${start}:`, err)
       errors += batch.length
     }
   }
+  return errors
+}
 
-  console.log(`\nBackfill complete: ${processed} embedded, ${errors} errors out of ${total} total.`)
-  process.exit(0)
+async function backfill() {
+  const errors = (await backfillTable("extractions")) + (await backfillTable("knowledge_units"))
+  console.log(`\nBackfill complete with ${errors} errors.`)
+  process.exit(errors > 0 ? 1 : 0)
 }
 
 backfill()
