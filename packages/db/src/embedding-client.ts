@@ -12,7 +12,13 @@ import { sql } from "drizzle-orm"
 export const DEFAULT_EMBEDDING_MODEL = "amazon.titan-embed-text-v2:0"
 export const DEFAULT_EMBEDDING_DIMENSIONS = 1024
 export const DEFAULT_EMBEDDING_REGION = "eu-west-2"
-export const MAX_TEXT_LENGTH = 30000
+export const MAX_TEXT_LENGTH = 25000
+const MAX_INPUT_TOKENS = 8192
+/** Target characters per token when re-cutting after a token overflow (conservative for dense text). */
+const RETRY_CHARS_PER_TOKEN = 7500
+const MIN_RETRY_CHARS = 1000
+const MAX_OVERFLOW_RETRIES = 3
+const BEDROCK_MAX_ATTEMPTS = 10
 const MODEL_PREFIX = "amazon.titan-embed-text-v2"
 const ALLOWED_DIMENSIONS = [256, 512, 1024]
 const BATCH_CONCURRENCY = 10
@@ -50,17 +56,33 @@ export function createEmbeddingClient(options: EmbeddingClientOptions = {}): Emb
     throw new Error(`Unsupported embedding dimensions ${dimensions}: expected one of ${ALLOWED_DIMENSIONS.join(", ")}`)
   }
 
-  const client: BedrockInvoker = options.client ?? new BedrockRuntimeClient({ region })
+  const client: BedrockInvoker = options.client ?? new BedrockRuntimeClient({ region, maxAttempts: BEDROCK_MAX_ATTEMPTS, retryMode: "adaptive" })
 
   async function embed(text: string): Promise<number[]> {
-    const response = await client.send(
-      new InvokeModelCommand({
-        modelId: model,
-        contentType: "application/json",
-        accept: "application/json",
-        body: JSON.stringify({ inputText: text.slice(0, MAX_TEXT_LENGTH), dimensions, normalize: true }),
-      })
-    )
+    let inputText = text.slice(0, MAX_TEXT_LENGTH)
+    let response: { body?: Uint8Array | string } | undefined
+    for (let overflows = 0; !response; ) {
+      try {
+        response = await client.send(
+          new InvokeModelCommand({
+            modelId: model,
+            contentType: "application/json",
+            accept: "application/json",
+            body: JSON.stringify({ inputText, dimensions, normalize: true }),
+          })
+        )
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        if (!/Too many input tokens/.test(message) || overflows >= MAX_OVERFLOW_RETRIES) throw err
+        overflows++
+        const reported = /request input token count:\s*(\d+)/i.exec(message)
+        const tokens = reported ? Number(reported[1]) : 2 * MAX_INPUT_TOKENS
+        const target = Math.max(MIN_RETRY_CHARS, Math.floor((inputText.length * RETRY_CHARS_PER_TOKEN) / tokens))
+        // Guarantee progress even if the reported count is nonsensical.
+        inputText = inputText.slice(0, Math.min(target, inputText.length - 1))
+        if (inputText.length === 0) throw err
+      }
+    }
     const raw = response.body
     const parsed = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw))
     const embedding: number[] = parsed.embedding

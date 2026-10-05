@@ -45,6 +45,69 @@ function memoryCache(): EmbeddingCacheStore & { entries: Map<string, number[]> }
   }
 }
 
+function overflowError(n: number) {
+  const e = new Error(`400 Bad Request: Too many input tokens. Max input tokens: 8192, request input token count: ${n}`)
+  e.name = "ValidationException"
+  return e
+}
+
+describe("token overflow", () => {
+  test("retries once with a shorter cut computed from the reported count", async () => {
+    const fake = fakeBedrock()
+    let calls = 0
+    const client: BedrockInvoker = {
+      async send(command: any) {
+        if (++calls === 1) throw overflowError(9949)
+        return fake.client.send(command)
+      },
+    }
+    await createEmbeddingClient({ client }).embed("a".repeat(25000))
+    expect(calls).toBe(2)
+    expect(fake.bodies).toHaveLength(1)
+    expect(fake.bodies[0].inputText).toHaveLength(Math.floor((25000 * 7500) / 9949))
+  })
+
+  test("assumes 2x the limit when the count is missing and never cuts below 1000 chars", async () => {
+    const a = fakeBedrock()
+    let n = 0
+    await createEmbeddingClient({
+      client: { send: async (c: any) => (++n === 1 ? Promise.reject(new Error("Too many input tokens")) : a.client.send(c)) },
+    }).embed("a".repeat(25000))
+    expect(a.bodies[0].inputText).toHaveLength(Math.floor((25000 * 7500) / 16384))
+
+    const b = fakeBedrock()
+    let m = 0
+    await createEmbeddingClient({
+      client: { send: async (c: any) => (++m === 1 ? Promise.reject(overflowError(1_000_000)) : b.client.send(c)) },
+    }).embed("a".repeat(25000))
+    expect(b.bodies[0].inputText).toHaveLength(1000)
+  })
+
+  test("propagates the error after 3 retries", async () => {
+    let calls = 0
+    const client: BedrockInvoker = {
+      async send() {
+        calls++
+        throw overflowError(9949)
+      },
+    }
+    await expect(createEmbeddingClient({ client }).embed("a".repeat(25000))).rejects.toThrow(/Too many input tokens/)
+    expect(calls).toBe(4)
+  })
+
+  test("other errors are not retried", async () => {
+    let calls = 0
+    const client: BedrockInvoker = {
+      async send() {
+        calls++
+        throw new Error("boom")
+      },
+    }
+    await expect(createEmbeddingClient({ client }).embed("x")).rejects.toThrow("boom")
+    expect(calls).toBe(1)
+  })
+})
+
 describe("createEmbeddingClient", () => {
   test("defaults and request shape", async () => {
     const fake = fakeBedrock()
@@ -58,10 +121,10 @@ describe("createEmbeddingClient", () => {
     expect(fake.bodies[0]).toEqual({ inputText: "hello", dimensions: 1024, normalize: true })
   })
 
-  test("truncates input to 30000 characters", async () => {
+  test("truncates input to 25000 characters", async () => {
     const fake = fakeBedrock()
     await createEmbeddingClient({ client: fake.client }).embed("x".repeat(MAX_TEXT_LENGTH + 500))
-    expect(fake.bodies[0].inputText).toHaveLength(30000)
+    expect(fake.bodies[0].inputText).toHaveLength(25000)
   })
 
   test("rejects a response with the wrong dimension count", async () => {
@@ -124,7 +187,7 @@ describe("embedding cache", () => {
   })
 
   test("hash covers the truncated text", () => {
-    expect(hashText("y".repeat(30000))).toBe(hashText("y".repeat(31000)))
+    expect(hashText("y".repeat(25000))).toBe(hashText("y".repeat(31000)))
   })
 
   test("embedBatchCached only embeds misses and keeps order", async () => {
