@@ -11,9 +11,12 @@
     "seed": "bun run src/seed-interviews.ts",
     "seed:clean": "bun run src/seed-interviews.ts --clean",
     "seed:demo": "bun run src/seed-demo.ts --clean",
+    "backfill-embeddings": "bun run src/backfill-embeddings.ts",
+    "test": "bun test",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.700.0",
     "drizzle-orm": "^0.38.0",
     "postgres": "^3.4.0"
   },
