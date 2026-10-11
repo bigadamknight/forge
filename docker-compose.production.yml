@@ -24,7 +24,7 @@ services:
     container_name: forge-api
     restart: unless-stopped
     ports:
-      - "3191:3071"
+      - "127.0.0.1:3191:3071"
     environment:
       DATABASE_URL: postgres://forge:${POSTGRES_PASSWORD}@postgres:5432/forge
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
