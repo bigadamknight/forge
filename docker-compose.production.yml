@@ -46,7 +46,7 @@ services:
     container_name: forge-web
     restart: unless-stopped
     ports:
-      - "3190:80"
+      - "127.0.0.1:3190:80"
     depends_on:
       - api
 
