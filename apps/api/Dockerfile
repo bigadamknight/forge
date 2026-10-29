@@ -1,4 +1,6 @@
-FROM oven/bun:1 AS base
+# Pinned: a floating oven/bun:1 stays at whatever the build host cached
+# (1.4.2 on hetzner, Oct 2026). 1.4.4 fixes the Brotli CVE-2026-111497.
+FROM oven/bun:1.4.4 AS base
 WORKDIR /app
 
 # Install dependencies
